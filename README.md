@@ -2,19 +2,21 @@
 
 This directory is the starting documentation set for a future AI Test Generation repository. It focuses on generating high-fidelity tests for pull requests, bug fixes, and dependency changes as an integration capability for the Red Hat Lightwell platform.
 
+Canonical repository: <https://github.com/testetson22/ai-test-generation>
+
 ## Documents
 
-- `business-case.md` - problem statement, proposed value, stakeholders, delivery phases, and business-case definition of done.
-- `test-generation.md` - focused technical and delivery proposal for the AI Test Generation system.
-- `factory-specification.md` - broader technical specification covering orchestration, framework adapters, evidence, security, and quality gates.
-- `software-factory-notes.md` - supporting architecture and ecosystem notes; these are source material, not normative requirements.
-- `ai-test-generation-research.md` - working analysis of input drivers, evidence boundaries, harness integration, and future production-environment simulation.
-- `existing-work-landscape.md` - analysis of odh-test-gen (`fullsend-ai/test-creator`) and the internal test plan generator pipeline: what to consume, what to learn from, and required verification.
-- `tool-reliability-findings.md` - concrete observed failures, scope limitations, and reported operational shortcomings in existing tools.
-- `vulnerability-driven-structure.md` - decision-neutral high-level structure for feeding Vulnerability Prioritization evidence into AI Test Generation.
-- `adr-ai-test-generation.md` - first-cut local ADR using the architecture-team template; proposed and not yet approved.
-- `decision-ledger.md` - open decisions, options, evidence, recommendations, owners, and change conditions on the path to the ADR.
-- `adr-plan.md` - what the eventual AI Test Generation ADR will decide, its inputs and exclusions, outline, and drafting sequence.
+- [`business-case.md`](business-case.md) - problem statement, proposed value, stakeholders, delivery phases, and business-case definition of done.
+- [`test-generation.md`](test-generation.md) - focused technical and delivery proposal for the AI Test Generation system.
+- [`factory-specification.md`](factory-specification.md) - broader technical specification covering orchestration, framework adapters, evidence, security, and quality gates.
+- [`software-factory-notes.md`](software-factory-notes.md) - supporting architecture and ecosystem notes; these are source material, not normative requirements.
+- [`ai-test-generation-research.md`](ai-test-generation-research.md) - working analysis of input drivers, evidence boundaries, harness integration, and future production-environment simulation.
+- [`existing-work-landscape.md`](existing-work-landscape.md) - analysis of odh-test-gen (`fullsend-ai/test-creator`) and the internal test plan generator pipeline: what to consume, what to learn from, and required verification.
+- [`tool-reliability-findings.md`](tool-reliability-findings.md) - concrete observed failures, scope limitations, and reported operational shortcomings in existing tools.
+- [`vulnerability-driven-structure.md`](vulnerability-driven-structure.md) - decision-neutral high-level structure for feeding Vulnerability Prioritization evidence into AI Test Generation.
+- [`adr-ai-test-generation.md`](adr-ai-test-generation.md) - first-cut local ADR using the architecture-team template; proposed and not yet approved.
+- [`decision-ledger.md`](decision-ledger.md) - open decisions, options, evidence, owners, and change conditions on the path to the ADR.
+- [`adr-plan.md`](adr-plan.md) - what the eventual AI Test Generation ADR will decide, its inputs and exclusions, outline, and drafting sequence.
 
 ## Recommended Reading Order
 

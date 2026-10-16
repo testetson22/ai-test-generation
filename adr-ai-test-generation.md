@@ -150,7 +150,7 @@ The following references identify the existing options considered by this ADR. L
 | [R12] | Mutation and fuzzing tools | Test-strength and negative-behavior validation | Ecosystem support, execution limits, reproducibility |
 | [R13] | OpenAEV, Metasploit, and related validation tools | Future authorized active-exploitation validation | Authorization, isolation, payload controls, audit, license |
 | [R14] | in-toto, SLSA, signing and attestation tooling | Test provenance and evidence verification | Lightwell evidence integration and policy support |
-| [R15] | `tool-reliability-findings.md` | Observed and reported limitations in existing test-generation work | Reliability envelope, self-check, and evidence-gate requirements |
+| [R15] | [`tool-reliability-findings.md`](https://github.com/testetson22/ai-test-generation/blob/main/tool-reliability-findings.md) | Observed and reported limitations in existing test-generation work | Reliability envelope, self-check, and evidence-gate requirements |
 
 The detailed landscape, evidence levels, and reuse questions are maintained in `existing-work-landscape.md` and `ai-test-generation-research.md`.
 

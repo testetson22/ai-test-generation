@@ -2,6 +2,8 @@
 
 Internal and open-source test-generation work to evaluate for reuse or learning, analyzed against the AI Test Generation architecture. Evidence levels are marked: **documented** (read from repository or README), **reported** (meeting notes, unverified), **inaccessible** (requires internal access).
 
+Canonical project repository: <https://github.com/testetson22/ai-test-generation>
+
 ## Resources
 
 | Resource | Access | Evidence level | Role |
