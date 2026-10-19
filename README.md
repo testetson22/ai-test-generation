@@ -74,4 +74,4 @@ The current directory intentionally contains documentation only. Implementation 
 
 ## Document Rendering
 
-The workflow `.github/workflows/render-adr-docx.yml` manually renders `adr-ai-test-generation.md` to a Google Docs-compatible `.docx` artifact using Pandoc. Run it from GitHub Actions with `workflow_dispatch` after the ADR has been manually reviewed. The generated document is uploaded as an artifact and is not automatically published to Google Drive.
+The ADR can be rendered locally to a Google Docs-compatible `.docx` using Pandoc after manual review. The repository does not publish documents automatically to GitHub Actions or Google Drive.
