@@ -64,22 +64,6 @@ Candidate sources include the `ai-test-harness` implementation [R1], `fullsend-a
 - Repeats proven work.
 - Loses access to existing quality gates, failure registers, analyzers, and operational lessons.
 
-### Option 4: Federated service model
-
-Lightwell owns platform workflow, tenancy, authorization, authoritative evidence identity, and downstream security workflows. Specialized test-generation and ecosystem components are invoked through contracts and return evidence references.
-
-**Pros**
-
-- Aligns with Lightwell platform ownership.
-- Allows multiple implementations or adapters to be evaluated independently.
-- Keeps vulnerability evidence and test evidence under explicit ownership boundaries.
-
-**Cons**
-
-- Requires stable cross-service contracts and correlation identifiers.
-- Distributed lifecycle state and failure handling are more complex.
-- Requires clear authority when a component or evidence source is unavailable.
-
 ### Cross-cutting evaluation criteria
 
 Every implementation option must be evaluated against the same non-optional requirements:
@@ -90,11 +74,15 @@ Every implementation option must be evaluated against the same non-optional requ
 - Differential, mutation, or equivalent behavioral validation where applicable.
 - Human review and explicit handling of blocked, inconclusive, and stated-gap outcomes.
 
-The golden-reference requirement applies whether the service is built from scratch, assembled from components, directly integrated with existing work, or implemented as a federated Lightwell service.
+The golden-reference requirement applies whether the service is built from scratch, assembled from components, or directly integrated with existing work.
 
 ## Decision
 
 We propose a **driver-agnostic, evidence-driven AI Test Generation service integrated with Lightwell through explicit contracts**. The current implementation direction is to build the service around the required evidence and Lightwell contracts while selectively consuming existing tools where they provide sufficient fidelity. Stronger reuse or integration proposals remain admissible.
+
+### Integration boundary
+
+Lightwell is the surrounding platform boundary for workflow triggers, tenancy, authorization, authoritative evidence identity, and downstream security workflows. AI Test Generation and its ecosystem components exchange requests, checkpoints, and evidence through explicit contracts. This is an integration decision, not an implementation option; the deployment and orchestration topology remain open.
 
 The first-cut architecture is:
 
@@ -187,7 +175,7 @@ The detailed landscape, evidence levels, and reuse questions are maintained in `
 ### Cons
 
 - The initial design may need to coordinate multiple evidence owners and integration boundaries.
-- A federated Lightwell integration requires contracts for requests, checkpoints, evidence references, results, and review decisions.
+- Contract-based Lightwell integration requires requests, checkpoints, evidence references, results, and review decisions.
 - Supporting multiple input drivers and ecosystems increases adapter and validation effort.
 - Human gates and evidence review add latency compared with unconstrained test generation.
 - Runtime and active-validation claims require more expensive, carefully controlled environments.
