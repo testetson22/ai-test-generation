@@ -342,10 +342,10 @@ Detailed ownership for production security operations, sandbox operations, signi
 
 ### Cons
 
-- The design remains intentionally provisional until Lightwell and other owners confirm the consensus items.
-- Multiple ownership boundaries create coordination work.
-- Golden-reference governance adds curation and maintenance cost.
-- Runtime validation and tool reuse cannot be finalized from repository research alone.
+- The initial design may need to coordinate multiple evidence owners and integration boundaries.
+- Contract-based Lightwell integration requires requests, checkpoints, evidence references, results, and review decisions.
+- Supporting multiple input drivers and software stacks increases adapter and validation effort.
+- Golden references require curation, versioning, drift management, and protection of sensitive examples.
 
 ## References
 

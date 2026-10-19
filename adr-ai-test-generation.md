@@ -166,7 +166,7 @@ The detailed landscape, evidence levels, and reuse questions are maintained in `
 - One architecture can support vulnerability-driven testing and broader test-generation requests.
 - Static vulnerability evidence is preserved without being overstated as runtime exploitability.
 - Existing internal and open-source work can be evaluated and reused without committing prematurely.
-- Human feedback, evidence gaps, and ambiguous results become explicit workflow states.
+- The service can pause for human guidance, resume from a checkpoint, and route evidence gaps or ambiguous results for explicit follow-up instead of silently treating them as success.
 - Native tests and signed evidence can integrate with existing repository and Lightwell workflows.
 - Deterministic quality gates reduce reliance on model self-assessment.
 - Golden references provide repeatable regression checks across implementation options, model changes, prompt changes, and adapter changes.
@@ -177,9 +177,4 @@ The detailed landscape, evidence levels, and reuse questions are maintained in `
 - The initial design may need to coordinate multiple evidence owners and integration boundaries.
 - Contract-based Lightwell integration requires requests, checkpoints, evidence references, results, and review decisions.
 - Supporting multiple input drivers and ecosystems increases adapter and validation effort.
-- Human gates and evidence review add latency compared with unconstrained test generation.
-- Runtime and active-validation claims require more expensive, carefully controlled environments.
-- Existing tools may not be consumable after license, ownership, or maintenance review.
 - Golden references require expert curation, versioning, drift management, and protection of sensitive examples.
-- Exact output comparison would be brittle; validation must compare normalized structure, behavior, evidence, and execution outcomes where appropriate.
-- The first ADR does not resolve all implementation choices; follow-on detailed designs and owner decisions are required.
