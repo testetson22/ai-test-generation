@@ -27,6 +27,7 @@ Deliberately avoid the heavyweight apparatus of the Evidence-Driven Vulnerabilit
 7. **Failure register:** whether observed harness failures require detectors, corrections, self-checks, and fail-closed runs.
 8. **Adapter layering:** how input-driver adapters and ecosystem adapters compose while preserving native framework output.
 9. **Immutable analysis context:** which source, dependency, build, toolchain, model, prompt, and sandbox identities are required.
+10. **Golden-reference validation:** which generated outputs, behaviors, evidence, and failure modes require repeatable reference checks across every implementation option.
 
 ### Decisions from the ledger
 
@@ -38,6 +39,7 @@ Entries 1 through 11 of `decision-ledger.md` provide options and evidence for im
 - `ai-test-generation-research.md` — sections 1 through 12: ADR insights, harness insights, structural and functional changes, Lightwell integration context, holistic model, production simulation, validation landscape, structural lessons.
 - `existing-work-landscape.md` — odh-test-gen (`fullsend-ai/test-creator`) and the internal test plan generator pipeline: what to consume, what to learn from, and the verification required first.
 - `vulnerability-driven-structure.md` — decision-neutral high-level relationship between Vulnerability Prioritization and AI Test Generation.
+- `tool-reliability-findings.md` — concrete observed and reported shortcomings that motivate deterministic and golden-reference quality gates.
 - `decision-ledger.md` — open design questions, options, evidence, owners, and change conditions.
 - Evidence-Driven Vulnerability Impact Prioritization ADR — the evidence contracts test generation consumes; the boundary between the two systems.
 - `ai-test-harness` repository — blueprint (docs/03), decision record (docs/21), pilot plan (docs/22), failure register (docs/15), evidence rollup (docs/11), adapter interface, and manifest schema.

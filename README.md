@@ -15,6 +15,7 @@ Canonical repository: <https://github.com/testetson22/ai-test-generation>
 - [`tool-reliability-findings.md`](tool-reliability-findings.md) - concrete observed failures, scope limitations, and reported operational shortcomings in existing tools.
 - [`vulnerability-driven-structure.md`](vulnerability-driven-structure.md) - decision-neutral high-level structure for feeding Vulnerability Prioritization evidence into AI Test Generation.
 - [`adr-ai-test-generation.md`](adr-ai-test-generation.md) - first-cut local ADR using the architecture-team template; proposed and not yet approved.
+- [`decision-record.md`](decision-record.md) - formal classification of established decisions, locally resolvable working choices, and consensus-required questions.
 - [`decision-ledger.md`](decision-ledger.md) - open decisions, options, evidence, owners, and change conditions on the path to the ADR.
 - [`adr-plan.md`](adr-plan.md) - what the eventual AI Test Generation ADR will decide, its inputs and exclusions, outline, and drafting sequence.
 
@@ -70,3 +71,7 @@ ai-test-generation/
 ```
 
 The current directory intentionally contains documentation only. Implementation should begin with repository discovery, the test-plan schema, and one native framework adapter.
+
+## Document Rendering
+
+The workflow `.github/workflows/render-adr-docx.yml` manually renders `adr-ai-test-generation.md` to a Google Docs-compatible `.docx` artifact using Pandoc. Run it from GitHub Actions with `workflow_dispatch` after the ADR has been manually reviewed. The generated document is uploaded as an artifact and is not automatically published to Google Drive.

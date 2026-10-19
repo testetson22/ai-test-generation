@@ -10,7 +10,7 @@ Software changes and dependency updates can alter behavior that existing tests d
 
 Red Hat Lightwell is the intended integration context. Vulnerability Prioritization supplies authoritative evidence [R6]; AI Test Generation consumes it and produces scoped test evidence without rewriting the upstream assessment.
 
-The AI Test Generation service is driver-agnostic: vulnerability findings, pull requests, dependency changes, bugs, contracts, test gaps, and user objectives may all initiate a run. The proposed user-facing lifecycle is:
+The AI Test Generation service is driver-agnostic: vulnerability findings, pull requests, dependency changes, bugs, contracts, test gaps, and user objectives may all initiate a run. Each request may include additional system context, such as how the target is built and tested, its existing test topology, available environments, and permitted validation actions. The proposed user-facing lifecycle is:
 
 ```text
 Analyze -> Plan -> Code -> Execute
@@ -80,9 +80,21 @@ Lightwell owns platform workflow, tenancy, authorization, authoritative evidence
 - Distributed lifecycle state and failure handling are more complex.
 - Requires clear authority when a component or evidence source is unavailable.
 
+### Cross-cutting evaluation criteria
+
+Every implementation option must be evaluated against the same non-optional requirements:
+
+- Golden-reference validation for known behaviors, failure modes, and representative generation cases.
+- Deterministic quality gates that can reject weak, uncollectable, unexecuted, or unsupported test output.
+- Isolated execution and evidence tied to the exact generated content and environment.
+- Differential, mutation, or equivalent behavioral validation where applicable.
+- Human review and explicit handling of blocked, inconclusive, and stated-gap outcomes.
+
+The golden-reference requirement applies whether the service is built from scratch, assembled from components, directly integrated with existing work, or implemented as a federated Lightwell service.
+
 ## Decision
 
-We propose a **driver-agnostic, evidence-driven AI Test Generation tool integrated with Lightwell through explicit contracts**.
+We propose a **driver-agnostic, evidence-driven AI Test Generation service integrated with Lightwell through explicit contracts**. The current implementation direction is to build the service around the required evidence and Lightwell contracts while selectively consuming existing tools where they provide sufficient fidelity. Stronger reuse or integration proposals remain admissible.
 
 The first-cut architecture is:
 
@@ -98,6 +110,8 @@ Input driver
 
 Vulnerability Prioritization is one input driver. It supplies applicability, affected-symbol, reachability, path-witness, build-context, and limitation references. Other drivers may supply code changes, dependency upgrades, bugs, contracts, test gaps, or user objectives.
 
+The Analyze stage also evaluates the target before generation. It discovers or consumes the service's test conventions, build and test commands, fixtures, deployment profile, existing coverage, dependency behavior, and available sandbox or dynamic-validation capabilities. It produces a feasibility assessment that determines which validation layers are safe and technically possible for this run: static analysis, library-level tests, application call-site tests, component environments, deployment-shaped simulation, or no automated execution. This assessment constrains the Plan stage; it does not silently turn an unavailable validation layer into a passing result.
+
 The tool will:
 
 - Preserve evidence, assessment, and recommendation as separate concepts.
@@ -109,17 +123,20 @@ The tool will:
 - Produce test and runtime evidence tied to source, artifact, dependency, environment, model, prompt, and tool identities.
 - Deliver tests only through a human-reviewed pull request or an explicitly approved equivalent workflow.
 - Avoid modifying production code, dependency manifests, release state, or authoritative Lightwell vulnerability records.
+- Validate model, prompt, adapter, and service changes against a maintained golden-reference set before treating them as equivalent or improved.
+- Require quality gates to establish that generated tests exercise the prioritized vulnerability, code change, or other stated objective rather than merely compiling or passing.
 
 The following remain open and are not selected by this ADR:
 
-- Assemble from open-source/internal components versus directly adapt an existing implementation.
+- The extent to which existing tools should be consumed, adapted, forked, or replaced.
 - Consume, fork, integrate by contract, or learn-only from `fullsend-ai/test-creator` and internal test-plan tooling.
 - Lightwell-native, independent-service, or hybrid orchestration.
 - Static/contextual testing versus optional representative runtime validation.
 - Whether active exploitation is included in a future separately approved research track.
-- Shared versus federated evidence-record ownership.
+- Shared, service-owned, or federated evidence-record storage and publication.
 - Human-gated versus policy-selected unattended operation.
 - The first production-simulation fidelity profile.
+- Final security and operational ownership beyond the POC.
 
 These choices remain in `decision-ledger.md` until confirmed by the responsible owners. The existing implementation and tool inventory is listed in the References section below; references identify candidates, not selected dependencies.
 
@@ -164,6 +181,7 @@ The detailed landscape, evidence levels, and reuse questions are maintained in `
 - Human feedback, evidence gaps, and ambiguous results become explicit workflow states.
 - Native tests and signed evidence can integrate with existing repository and Lightwell workflows.
 - Deterministic quality gates reduce reliance on model self-assessment.
+- Golden references provide repeatable regression checks across implementation options, model changes, prompt changes, and adapter changes.
 - Production simulation and active exploitation remain possible without making them first-release requirements.
 
 ### Cons
@@ -174,4 +192,6 @@ The detailed landscape, evidence levels, and reuse questions are maintained in `
 - Human gates and evidence review add latency compared with unconstrained test generation.
 - Runtime and active-validation claims require more expensive, carefully controlled environments.
 - Existing tools may not be consumable after license, ownership, or maintenance review.
+- Golden references require expert curation, versioning, drift management, and protection of sensitive examples.
+- Exact output comparison would be brittle; validation must compare normalized structure, behavior, evidence, and execution outcomes where appropriate.
 - The first ADR does not resolve all implementation choices; follow-on detailed designs and owner decisions are required.
