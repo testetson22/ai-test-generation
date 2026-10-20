@@ -1,12 +1,14 @@
 # Existing Test-Generation Reliability Findings
 
-This document records concrete limitations in existing work. It distinguishes observed failures, documented scope limitations, and reported operational problems. It is evidence for comparing build, assembly, integration, and reference-only options; it is not a rejection of any tool.
+This document records concrete limitations in existing work. It distinguishes historical failure modes, documented scope limitations, and reported operational problems. It is evidence for comparing build, assembly, integration, and reference-only options; it is not a rejection of any tool.
+
+**Interpretation note:** The `ai-test-harness` entries below are historical failure modes observed during development. The harness owner reports that each became a self-check which runs before every execution and stops the run if the check fails. They should therefore be read as evidence of why safety controls are needed, not as unresolved defects in the current harness.
 
 ## Summary
 
 | Resource | Evidence type | Concrete limitation | Design implication |
 |---|---|---|---|
-| `ai-test-harness` | Observed failures in its failure register | Generated tests can be empty, weak, incorrectly targeted, uncollectable, falsely submitted, or misclassified without explicit gates | A wrapper or successor needs self-checks, evidence-bound submission, differential role handling, and fail-closed triage |
+| `ai-test-harness` | Historical failure modes converted into pre-run self-checks | Generated tests could previously be empty, weak, incorrectly targeted, uncollectable, falsely submitted, or misclassified without explicit gates | Preserve the self-check/fail-closed pattern when consuming, wrapping, or reimplementing the capability |
 | `fullsend-ai/test-creator` | Documented scope and workflow behavior | Focuses on Jira-strategy-driven E2E/UI plans, uses live-cluster UI verification, and does not provide sealed differential execution, mutation, or signed provenance | Useful Plan/Code-stage source, but an integration layer must supply broader evidence and execution controls |
 | Internal test-plan-generator | Reported meeting notes, not independently verified | Excessive plan text, low adoption, no automatic obsolete-case deletion, ambiguity when impacted repositories are not declared | Concise artifacts, explicit repository inputs, and test retirement must be first-class requirements |
 
@@ -27,7 +29,7 @@ The repository's failure register states that each entry was observed in a real 
 | GF-027 | A later failed repair erased an earlier attempt that had collected and run | Repair loops need fallback semantics and must preserve the last valid evidence |
 | GF-028 | Mutation sampled unreachable Go sites and reported a zero score | Mutation results must be scoped to executed code, or they misrepresent test strength |
 
-These are not hypothetical concerns. They show why the AI Test Generation service should wrap generation with deterministic collection, assertion, differential, mutation, and provenance gates rather than trust model output or a passing command alone.
+These are historical, observed failure modes with corresponding self-checks in the current harness. They show why the AI Test Generation service should preserve deterministic collection, assertion, differential, mutation, and provenance gates rather than trust model output or a passing command alone.
 
 ## `fullsend-ai/test-creator`: scope and workflow limitations
 
