@@ -40,7 +40,7 @@ For a pull request or dependency change, the harness:
 
 The harness may propose a test, but it does not merge it, publish a release, modify production infrastructure, or use production secrets.
 
-Every behaviour a change reaches must end in one of three states: validated by a test that ran on both sides of the change, handed to the team for execution in their environment, or a stated gap with its reason. Nothing is silent, and nothing is claimed that was not proven.
+After assessing a vulnerability, change, or other input, the service identifies the relevant behaviors to test. For each identified behavior, it records whether the behavior was validated by an executed test, handed to the owning team for environment-specific execution, or left as a stated gap with its reason. The resulting sign-off covers test evidence and limitations, not implementation or release approval.
 
 ## 4. What “AI-Generated Test” Means
 

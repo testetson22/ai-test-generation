@@ -96,11 +96,13 @@ The feasibility result constrains Plan. An unavailable validation layer cannot b
 
 ### 6. Three-outcome behavior rule
 
-Every reached behavior must end in one of these outcomes:
+After assessing the supplied vulnerability evidence, change, or other input, the service identifies relevant behaviors to test. For each identified behavior, the service records whether it was:
 
 1. Validated by an executed test.
 2. Handed to the team for execution in its environment.
 3. Recorded as a stated gap with its reason.
+
+Sign-off covers generated tests and evidence; it does not approve implementation or release decisions.
 
 Nothing is silently omitted and nothing is claimed without evidence.
 
