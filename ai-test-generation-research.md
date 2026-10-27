@@ -1040,7 +1040,22 @@ Before writing the ADR, maintain the current research as a working document and 
 
 This keeps the eventual ADR concise, auditable, and appropriately cautious while preserving the broader research behind it.
 
-## 12. Recommended Direction
+## 12. Evaluation-Harness Landscape
+
+The detailed external assessment is maintained in [evaluation-harness-landscape.md](evaluation-harness-landscape.md). Its central conclusion is that no single benchmark validates the whole service. The evaluation plan should combine orthogonal, independently scored harnesses:
+
+- CyberGym for vulnerability-driver PoC discrimination and isolation semantics.
+- CyberGym-E2E for a separately approved discovery/PoC/patch research track.
+- Defects4J and BugsInPy for real-fault regression validation in Java and Python.
+- SWT-Bench for repository-level issue-to-test generation, with Python scope noted.
+- SWE-bench Verified as a change-driven repair comparator, not a test-generation score.
+- Magma for fuzz-target and ground-truth canary evaluation.
+
+CyberGym is a particularly strong fit for the proposed `exposure test` and `fix-pinning test` distinction because it executes a submitted PoC against vulnerable and fixed artifacts and records separate outcomes. It should remain an evaluation adapter rather than a production dependency: the documented corpus is primarily C/C++ vulnerability and fuzzing material, and its oracle does not validate native pytest, Go, Ginkgo, or JUnit generation. Benchmark outcomes must be mapped to `reproduced`, `fixed_behavior`, `not_reached`, `blocked`, `environment_mismatch`, or `inconclusive` without turning a failed reproduction into `not_affected`.
+
+The service should report benchmark-specific metrics separately from lifecycle quality metrics. Differential correctness, real-fault detection, test collection, assertion strength, exact-content provenance, flakiness, cost, and latency are distinct dimensions. A fixed holdout, version-pinned images/data, contamination controls, and local reproducibility trials are required before any benchmark becomes a CI quality gate.
+
+## 13. Recommended Direction
 
 The next design iteration should not start with model selection or implementation language. It should start with:
 

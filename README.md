@@ -13,6 +13,9 @@ Canonical repository: <https://github.com/testetson22/ai-test-generation>
 - [`ai-test-generation-research.md`](ai-test-generation-research.md) - working analysis of input drivers, evidence boundaries, harness integration, and future production-environment simulation.
 - [`existing-work-landscape.md`](existing-work-landscape.md) - analysis of odh-test-gen (`fullsend-ai/test-creator`) and the internal test plan generator pipeline: what to consume, what to learn from, and required verification.
 - [`tool-reliability-findings.md`](tool-reliability-findings.md) - concrete observed failures, scope limitations, and reported operational shortcomings in existing tools.
+- [`evaluation-harness-landscape.md`](evaluation-harness-landscape.md) - assessment of CyberGym and comparable external benchmarks as evaluation harnesses.
+- [`epic-technical-guidance.md`](epic-technical-guidance.md) - Epic-preparation guidance for harness selection, service contracts, pre-spike decisions, and delivery decomposition.
+- [`vvah-test-generation-extension.md`](vvah-test-generation-extension.md) - maps VVAH findings and Context Graph capabilities to potential test-generation extensions.
 - [`vulnerability-driven-structure.md`](vulnerability-driven-structure.md) - decision-neutral high-level structure for feeding Vulnerability Prioritization evidence into AI Test Generation.
 - [`adr-ai-test-generation.md`](adr-ai-test-generation.md) - first-cut local ADR using the architecture-team template; proposed and not yet approved.
 - [`decision-record.md`](decision-record.md) - formal classification of established decisions, locally resolvable working choices, and consensus-required questions.
@@ -27,9 +30,11 @@ Canonical repository: <https://github.com/testetson22/ai-test-generation>
 4. `software-factory-notes.md` for background ideas and alternatives.
 5. `ai-test-generation-research.md` for open design questions and future research tracks.
 6. `existing-work-landscape.md` for prior internal and open-source work to consume or learn from.
-7. `vulnerability-driven-structure.md` for the upstream evidence handoff and validation layers.
-8. `adr-ai-test-generation.md` for the first-cut ADR.
-9. `decision-ledger.md` and `adr-plan.md` when preparing the next revision.
+7. `evaluation-harness-landscape.md` for external benchmark fit and evaluation design.
+8. `epic-technical-guidance.md` for implementation contracts and Epic decomposition.
+9. `vulnerability-driven-structure.md` for the upstream evidence handoff and validation layers.
+10. `adr-ai-test-generation.md` for the first-cut ADR.
+11. `decision-ledger.md` and `adr-plan.md` when preparing the next revision.
 
 ## Guidance Sources
 
