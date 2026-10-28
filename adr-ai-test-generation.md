@@ -132,7 +132,7 @@ The service will:
 
 • Distinguish test failures, setup failures, blocked runs, non-reproduction, and inconclusive evidence.
 
-• Produce test and runtime evidence tied to source, artifact, dependency, environment, model, prompt, and tool identities.
+• Produce test and runtime evidence tied to source, artifact, dependency, environment, model, prompt, and tool identities. This should be represented by appropriate industry-standard evidence, provenance, attestation formats, attachable to the source-control change, publishable to an approved audit/evidence store, and consumable by automated release and policy gates.
 
 • Deliver tests only through a human-reviewed pull request or an explicitly approved equivalent workflow.
 
