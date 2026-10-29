@@ -16,7 +16,7 @@ The AI Test Generation service is driver-agnostic: vulnerability findings will b
 
 Analyze \-\> Plan \-\> Code \-\> Execute
 
-Each stage's results must be subject to automated review with an option for human-in-the-loop review. After assessing a vulnerability, change, or other input, the service identifies the relevant behaviors to test. For each identified behavior, it records whether the behavior was validated by an executed test, handed to the owning team for environment-specific execution, or recorded as a stated gap with its reason. The resulting sign-off covers test evidence and limitations, not implementation or release approval.
+Each stage's results must be subject to automated review with an option for human-in-the-loop review. Each internal component of the service that supports each stage should be modularized such that we can more easily swap in tools when appropriate. After assessing a vulnerability, change, or other input, the service identifies the relevant behaviors to test. For each identified behavior, it records whether the behavior was validated by an executed test, handed to the owning team for environment-specific execution, or recorded as a stated gap with its reason. The resulting sign-off covers test evidence and limitations, not implementation or release approval.
 
 ## Options
 
@@ -29,6 +29,7 @@ Proposed architecture:
 ```
 Lightwell request and evidence references
   -> AI Test Generation service
+       -> preflight self-verification and failure-register checks
        -> vulnerability prioritization input adapter
        -> repository/context analysis
        -> feasibility assessment
@@ -118,6 +119,8 @@ Vulnerability Prioritization is the input driver targeted for the initial releas
 
 The Analyze stage also evaluates the target before generation. It discovers or consumes the service's test conventions, build and test commands, fixtures, deployment profile, existing coverage, dependency behavior, and available sandbox or dynamic-validation capabilities \[R7\]. It produces a feasibility assessment that determines which validation layers are safe and technically possible for this run: static analysis, library-level tests, application call-site tests, component environments, deployment-shaped simulation, or no automated execution. This assessment constrains the Plan stage; it does not silently turn an unavailable validation layer into a passing result.
 
+For a VEX/VPE-driven fix-validation request, feasibility confirms that authorized base and candidate subjects, reproducible builds, equivalent environments, and clear test pass/fail criteria are available for differential execution. It does not validate the fix. Execute and quality gates validate it by running the same test against both subjects: vulnerable behavior on base and fixed behavior on candidate. Missing artifacts, environment differences, collection failures, or unclear criteria produce a blocked or inconclusive result.
+
 The service will:
 
 • Preserve evidence, assessment, and recommendation as separate concepts.
@@ -132,7 +135,9 @@ The service will:
 
 • Distinguish test failures, setup failures, blocked runs, non-reproduction, and inconclusive evidence.
 
-• Produce test and runtime evidence tied to source, artifact, dependency, environment, model, prompt, and tool identities. This should be represented by appropriate industry-standard evidence, provenance, attestation formats, attachable to the source-control change, publishable to an approved audit/evidence store, and consumable by automated release and policy gates.
+• Produce test and runtime evidence tied to source, artifact, dependency, environment, model, prompt, and tool identities. Preserve and reference the authoritative VEX documents/statements supplied by Vulnerability Prioritization, and link generated-test and runtime evidence back to the applicable VEX artifacts. Evidence should use appropriate industry-standard evidence, provenance, attestation, and VEX-compatible formats where applicable; be attachable to the source-control change; publishable to an approved audit/evidence store; and consumable by automated release and policy gates.
+
+• Run deterministic preflight self-verification and failure-register checks before consuming request-specific evidence or invoking model/repository work; fail closed and publish no downstream evidence when required checks fail.
 
 • Deliver tests only through a human-reviewed pull request or an explicitly approved equivalent workflow.
 
@@ -141,6 +146,20 @@ The service will:
 • CI/CD: Internal quality gates that validate model, prompt, adapter, and service changes against a maintained golden-reference set before treating them as equivalent or improved. This is intended to ensure fidelity on a known set of inputs and outputs.
 
 • Require quality gates to establish that generated tests exercise the prioritized vulnerability, code change, or other stated objective rather than merely compiling or passing. A merge decision will consider two things where either can prevent a merge: the pipeline result and the test evidence. The initial release may be a human-involved review, but the end-goal *is* synthesizing these gates with minimal input.
+
+• Measure the service by stage and end-to-end run. Capture latency, queue and human-wait time, model/token usage, infrastructure and execution cost, retries, artifact volume, failures, quality-gate outcomes, evidence completeness, reviewer effort, accepted tests, and avoided or detected issues. Establish a baseline using the existing manual/CI process and report gains, regressions, and limitations; business-case thresholds remain pilot hypotheses until measured.
+
+### Provisional MVP Definition of Done and Roadmap
+
+**MVP Definition of Done:** For a VPE-provided VEX finding targeting one supported Java repository and native test framework, an authenticated platform or SCM entry point can run the complete `Analyze -> Plan -> Code -> Execute` capability after stage-zero self-verification. The service produces an approved native test, executes it against identified base and candidate subjects in an approved isolated environment, records the differential result and limitations, and emits a verified signed evidence record linked to the VEX statement and source-control change through an owner-approved publication path. Human approval is the provisional MVP operating assumption; the service does not modify production code, merge changes, or rewrite VPE/Lightwell records. Required failures produce explicit blocked, inconclusive, or stated-gap outcomes, and the end-to-end path is covered by golden-reference and failure-register checks.
+
+**Roadmap:**
+
+1. **MVP target:** Java/VPE-VEX driver, one native framework, one SCM/platform entry point, isolated base/candidate execution, signed evidence, and a human-reviewed PR/change workflow. These describe acceptance scope, not final implementation or ownership decisions.
+2. **Expansion:** Additional Java repositories/frameworks, stronger mutation/stability checks, customer-provided execution environments, and additional SCM/model endpoints.
+3. **Scale:** Python/Go and other framework adapters, dependency and transitive-impact workflows, broader evidence/VEX integration, scheduled operation, and policy-selected unattended execution.
+
+Roadmap stages require measured pilot results and owner approval. The open decisions below remain open: implementation reuse, orchestration topology, runtime-validation fidelity, active exploitation, evidence storage/publication ownership, unattended policy, and long-term security/operational ownership. Later capabilities do not expand MVP acceptance criteria or pre-select those decisions.
 
 The following remain open and are not selected by this ADR:
 

@@ -399,6 +399,7 @@ Do not select one framework to own orchestration, model access, repository tools
 ```text
 Lightwell or API trigger
   -> AI Test Generation control plane
+       -> preflight self-verification and failure-register checks
        -> RHOAI model serving and candidate agent runtime
        -> durable workflow/controller
        -> typed model-task interface
@@ -411,6 +412,25 @@ Lightwell or API trigger
 
 The control plane plans and evaluates; the execution plane runs untrusted repository code. Neither RHOAI nor the workflow controller should need Jenkins-, Tekton-, or GitHub-specific domain logic.
 
+### Preflight self-verification
+
+Preflight is a stage-zero control gate, not another user-facing lifecycle phase. It runs before request-specific evidence is consumed, model calls are made, repository content is trusted as context, or execution work is dispatched.
+
+It should verify, as applicable:
+
+- Service/schema and adapter versions are compatible.
+- Required VEX and VPE policy parsers/decision schemas are available.
+- Model endpoint profile, structured-output capabilities, budget, authentication, and redaction behavior are healthy.
+- SCM/platform identity and read-only repository access are available without granting mutation authority.
+- Framework adapters and approved command profiles are installed and self-test successfully.
+- Execution provider, sandbox image, callback path, artifact store, and required service dependencies are available.
+- Signing/attestation and audit-store verification paths are usable before a run could claim signed evidence.
+- Known failure-register cases pass, including weak/empty/uncollectable generation, wrong-target mapping, patch drift, differential misclassification, and provenance mismatch.
+
+The output should be a signed or content-addressed `PreflightResult` containing check IDs, versions, environment/tool identities, timestamps, limitations, and a `ready | degraded | blocked` status. `degraded` is allowed only when the affected capability is not requested; otherwise the run fails closed. Preflight must not claim that a customer behavior was validated.
+
+Distinguish startup/platform health from per-run preflight. A healthy service can still fail a run-specific check for a missing Java adapter, incompatible repository profile, unavailable base artifact, expired VEX/VPE policy, or insufficient execution capability. No request-specific evidence, PR status, or signed differential record should be published from a run that fails a required preflight check.
+
 ### Typical RHOAI integration pattern
 
 The stable integration pattern is application-to-model-serving, not embedding product orchestration in the model server:
@@ -419,6 +439,7 @@ The stable integration pattern is application-to-model-serving, not embedding pr
 Lightwell / Red Hat console platform
   -> AI Test Generation platform/plugin interface
        -> AI Test Generation API and workflow controller
+       -> preflight self-verification and failure-register checks
        -> SCM plugin/provider adapter
             -> GitHub/GitLab/enterprise SCM
        -> checkpoint database
@@ -857,6 +878,7 @@ PhaseResult<T>
 
 | Phase | Primary inputs | Primary outputs | Next consumer |
 |---|---|---|---|
+| Preflight self-verification | Service configuration, adapter/runtime versions, endpoint/policy/artifact capabilities, failure-register cases | `PreflightResult`, capability/readiness findings | Vulnerability prioritization input adapter or terminal blocked status |
 | Vulnerability prioritization input adapter | `TestGenerationRequest`, `VulnerabilityDriverPayload`, authorization and policy references | `IntakeResult`, `EvidenceBundle`, normalized driver context | Repository/context analysis |
 | Repository/context analysis | Accepted intake, repository target, evidence bundle, repository access | `ContextAnalysisResult`, `RepositoryProfile`, objective candidates, analysis checkpoint | Feasibility assessment |
 | Feasibility assessment | Repository profile, objective candidates, policies, execution-provider capabilities | `FeasibilityAssessment`, candidate validation strategies, required decisions | Test planning |
@@ -910,6 +932,34 @@ Repository analysis, feasibility, planning, generation, and quality evaluation c
 - Unsupported driver versions and unauthorized references fail before repository access.
 - Missing optional evidence can produce `accepted_with_gaps`; missing identity or authorization produces `rejected` or `blocked`.
 
+### Preflight self-verification (stage zero)
+
+**Responsibility:** Verify that the service can safely and reproducibly perform the requested run before consuming request-specific evidence or invoking model/repository work.
+
+**Inputs:**
+
+- Service and contract configuration, schema versions, adapter versions, and enabled capabilities.
+- Requested capability set and policy requirements, once the request envelope is authenticated.
+- Model endpoint profile and structured-output conformance status.
+- VEX/VPE parser and policy-evaluation capability.
+- SCM/platform connection health and read-only authorization.
+- Java framework adapter, approved command profiles, execution provider, artifact store, signing, and audit-store capabilities.
+- Versioned failure-register and golden self-check cases.
+
+**Outputs:**
+
+- `PreflightResult` with readiness status, check results, tool/runtime identities, policy versions, timestamps, and limitations.
+- Capability map identifying `ready`, `degraded`, `blocked`, or `not_requested` functions.
+- Failure-register and self-check evidence references.
+- Allowed next action: proceed, degrade to an explicitly permitted capability, retry platform health, or terminate without request-specific evidence.
+
+**Handoff rules:**
+
+- Required check failure is fail-closed and prevents downstream model, repository, execution, PR, or evidence work.
+- A preflight pass proves service readiness only; it does not establish anything about the target vulnerability or repository behavior.
+- Run-specific preflight is repeated when the endpoint, policy, adapter, artifact, or execution context changes materially.
+- Preflight output is itself auditable but must not be presented as customer test evidence.
+
 ### 2. Repository/context analysis
 
 **Responsibility:** Establish what repository and build/test context is actually available at the requested revision. Combine caller-supplied context with read-only discovery while keeping their provenance distinct.
@@ -942,6 +992,8 @@ Repository analysis, feasibility, planning, generation, and quality evaluation c
 
 **Responsibility:** Determine which validation strategies are technically possible and permitted for each objective candidate in the current context.
 
+For a VPE/VEX `fixed` or remediation objective, feasibility confirms that authorized base and candidate subjects, reproducible builds, equivalent Java execution environments, and clear pass/fail criteria are available for differential execution. It does not validate the fix; differential execution and quality gates do that by running the same test against both subjects.
+
 **Inputs:**
 
 - `RepositoryProfile`, `ContextAnalysisResult`, `ObjectiveCandidate[]`, and `EvidenceBundle`.
@@ -964,6 +1016,7 @@ Repository analysis, feasibility, planning, generation, and quality evaluation c
 - `available` means both technically supported and permitted; technical capability without authorization is `blocked`.
 - Feasibility must not convert missing runtime context into a static pass.
 - Planning may select only an available strategy or explicitly create a handoff/gap.
+- A `fix-pinning` strategy is available only when both comparison subjects and executable expected behavior/pass-fail criteria are identified; otherwise Plan must record a gap or lower-fidelity strategy.
 - Estimates are planning inputs, not execution evidence.
 
 ### 4. Test planning and user checkpoint
@@ -1506,6 +1559,7 @@ Before estimating the language-adapter and publication work, record the sponsor/
 Deliver:
 
 - Versioned schemas for request, evidence references, objectives, plans, checkpoints, feedback, generation, execution, quality, and provenance.
+- `PreflightResult` and self-check/failure-register result contracts.
 - Normalized VEX input and format-specific input-adapter interface.
 - VPE policy decision, OPA bundle reference, evaluation result, obligation, and policy-composition contracts.
 - Signed differential test record, materialized-test equivalence, attestation, verification, and supersession contracts.
@@ -1621,6 +1675,7 @@ Exit condition: a reviewer and release gate can verify one signed record that tr
 
 ```text
 Epic 1: contracts and run state
+  -> stage-zero preflight self-verification
   -> Epic 2: vulnerability evidence intake
   -> Epic 3: repository analysis
        -> Epic 4: plan and review
