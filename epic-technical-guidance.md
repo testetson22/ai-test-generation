@@ -1747,6 +1747,7 @@ The spike result should recommend a stack per layer, identify components to reus
 - [Existing Work Landscape](existing-work-landscape.md)
 - [Tool Reliability Findings](tool-reliability-findings.md)
 - [Updated AI Test Harness Blueprint Business Case](../AI%20Test%20Harness%20Blueprint%20Business%20Case.md)
+- [SSC Demo MVP Alignment](ssc-demo-mvp-alignment.md)
 - [Secure Software Supply Chain SDLC ADR](../ADR%20-%20Secure%20Software%20Supply%20Chain%20SDLC.md)
 - [OpenVEX specification](https://github.com/openvex/spec)
 - [OASIS CSAF 2.0](https://docs.oasis-open.org/csaf/csaf/v2.0/csaf-v2.0.html)
