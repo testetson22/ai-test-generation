@@ -139,7 +139,7 @@ The service will:
 
 • Run deterministic preflight self-verification and failure-register checks before consuming request-specific evidence or invoking model/repository work; fail closed and publish no downstream evidence when required checks fail.
 
-• Deliver tests only through a human-reviewed pull request or an explicitly approved equivalent workflow.
+• When generated tests are promoted into a repository, deliver them only through a human-reviewed pull request or an explicitly approved equivalent workflow. Repository promotion is not required for the initial VPE-to-Test-Generation MVP.
 
 • Avoid modifying production code, dependency manifests, release state, or authoritative Lightwell vulnerability records.
 
@@ -151,12 +151,12 @@ The service will:
 
 ### Provisional MVP Definition of Done and Roadmap
 
-**MVP Definition of Done:** For a VPE-provided VEX finding targeting one supported Java repository and native test framework, an authenticated platform or SCM entry point can run the complete `Analyze -> Plan -> Code -> Execute` capability after stage-zero self-verification. The service produces an approved native test, executes it against identified base and candidate subjects in an approved isolated environment, records the differential result and limitations, and emits a verified signed evidence record linked to the VEX statement and source-control change through an owner-approved publication path. Human approval is the provisional MVP operating assumption; the service does not modify production code, merge changes, or rewrite VPE/Lightwell records. Required failures produce explicit blocked, inconclusive, or stated-gap outcomes, and the end-to-end path is covered by golden-reference and failure-register checks.
+**MVP Definition of Done:** For a VPE-provided VEX finding targeting one supported Java repository and native test framework, an authenticated VPE/platform request can run the complete `Analyze -> Plan -> Code -> Execute` capability inside the SSC demo after stage-zero self-verification. The service produces an approved native test artifact, executes it against identified base and candidate subjects in an approved isolated environment, records the differential result and limitations, and emits a verified signed evidence record linked to the source VEX statement through an owner-approved evidence path. Human approval is the provisional MVP operating assumption; the service does not modify production code, merge changes, or rewrite VPE/Lightwell records. Required failures produce explicit blocked, inconclusive, or stated-gap outcomes, and the end-to-end path is covered by golden-reference and failure-register checks. Implement only the minimum SCM compatibility required to insert the service into the existing SSC demo flow; broader SCM triggering, publication, and promotion are not MVP goals.
 
 **Roadmap:**
 
-1. **MVP target:** Java/VPE-VEX driver, one native framework, one SCM/platform entry point, isolated base/candidate execution, signed evidence, and a human-reviewed PR/change workflow. These describe acceptance scope, not final implementation or ownership decisions.
-2. **Expansion:** Additional Java repositories/frameworks, stronger mutation/stability checks, customer-provided execution environments, and additional SCM/model endpoints.
+1. **MVP target:** VPE-initiated Java/VEX flow in the SSC demo, one native framework, isolated base/candidate execution, signed evidence, and human-reviewed stage checkpoints. These describe acceptance scope, not final implementation or ownership decisions.
+2. **Expansion:** SCM/PR capabilities beyond the minimum SSC demo compatibility seam, test promotion, additional Java repositories/frameworks, stronger mutation/stability checks, customer-provided execution environments, and additional model endpoints.
 3. **Scale:** Python/Go and other framework adapters, dependency and transitive-impact workflows, broader evidence/VEX integration, scheduled operation, and policy-selected unattended execution.
 
 Roadmap stages require measured pilot results and owner approval. The open decisions below remain open: implementation reuse, orchestration topology, runtime-validation fidelity, active exploitation, evidence storage/publication ownership, unattended policy, and long-term security/operational ownership. Later capabilities do not expand MVP acceptance criteria or pre-select those decisions.
@@ -238,7 +238,7 @@ The detailed landscape, evidence levels, and reuse questions are maintained in e
 
 ### Cons
 
-• The initial design will not need to coordinate multiple evidence owners and integration boundaries; however, in the future we may need to handle multiple owners and extensibility needs to be part of the design.
+• The initial design must coordinate multiple evidence owners and integration boundaries, including VPE, Lightwell/platform, execution, artifact, signing, and policy consumers; explicit ownership and extensible contracts are therefore required from the MVP. SCM becomes an additional boundary when repository publication is enabled.
 
 • Contract-based Lightwell integration requires requests, checkpoints, evidence references, results, and review decisions.
 

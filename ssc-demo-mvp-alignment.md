@@ -1,22 +1,22 @@
 # SSC Demo MVP Alignment
 
-Date: Oct 29, 2026
+Date: Oct 30, 2026
 
 ## Purpose
 
 This document aligns the AI Test Generation MVP with `/Users/tstetson/Public/workspaces/ssc-demo`. It is a planning and discovery artifact, not a new architecture decision and not a commitment to the demo's current agent implementation.
 
-The objective is a VPE-initiated Java/VEX test-generation run that fits the existing supply-chain demonstration and can replace the current test-generation implementation without replacing the surrounding platform flow.
+The objective is a VPE-initiated Java/VEX test-generation run that fits the existing supply-chain demonstration and can replace the current limited test-generation implementation without replacing the surrounding platform flow. SCM is considered only to the extent the existing demo requires it to supply source or expose generated tests/evidence; broader SCM integration is not an MVP goal.
 
 ## Current Demo Baseline
 
-The demo is an OpenShift/Tekton/Argo GitOps environment with GitLab, RHTPA/Trustify, RHTAS, Quay, Artifactory, Keycloak, and an example Maven/Spring Boot application. Tekton resources are GitOps-managed from the configured repository and normally run in namespace `tssc-app-ci`. The default selected Maven pipeline is `maven-build-ci-pipeline-ai.yaml`; the other Maven variants are excluded because they share the same `metadata.name`.
+The demo is an OpenShift/Tekton/Argo GitOps environment with GitLab, RHTPA/Trustify, RHTAS, Quay, Artifactory, Keycloak, and an example Maven/Spring Boot application. Tekton resources are GitOps-managed from the configured repository and normally run in namespace `tssc-app-ci`. The default selected Maven pipeline is `maven-build-ci-pipeline-ai.yaml`; the other Maven variants are excluded because they share the same `metadata.name`. The active remediation-data path loads OSV advisories and CycloneDX component documents into RHTPA. An OpenVEX fixture exists under the inactive legacy Nexus/Lightwell repository component but is not currently deployed or ingested by the active GitOps path.
 
 There are two relevant test-generation paths:
 
 | Demo path | Current behavior | MVP alignment |
 |---|---|---|
-| `agentic-test-generation` | Standalone `clone -> verify commit -> Maven package -> ai-generate-tests -> mvn verify -> tests-only PR/MR` pipeline | Primary compatibility shell for a VPE-initiated test-generation run |
+| `agentic-test-generation` | Standalone `clone -> verify commit -> Maven package -> ai-generate-tests -> mvn verify -> tests-only PR/MR` pipeline | Primary execution-slot compatibility shell; retain only the SCM behavior required to preserve the existing flow |
 | `maven-build-ci` AI branch | Existing build/SBOM/RHTPA chain, then `conforma-policy-check -> ai-generate-tests -> ai-select-cve -> ai-remediate-dependency -> mvn verify -> PR/MR` when enabled | Existing test-generation slot; candidate for a later integrated flow, but current ordering does not supply a VPE decision to the test task |
 
 The current `ai-generate-tests` Task:
@@ -45,17 +45,19 @@ VPE VEX/policy event or approved platform request
             -> isolated base/candidate execution
             -> signed differential evidence
        -> compatibility result/artifact adapter
-  -> existing demo PR/MR and Lightwell evidence path
+  -> configured SSC demo evidence output
+  -> optional existing PR/MR compatibility path
 ```
 
 ### Initial integration recommendation
 
-1. Use `agentic-test-generation` as the primary compatibility shell because it already represents the test-generation slot without coupling test generation to CVE selection or dependency remediation.
-2. Replace or wrap only the `ai-generate-tests` Task with an adapter that invokes the service. Keep `mvn verify` and `open-pr-tests` as compatibility steps while the service contract is proven.
+1. Use `agentic-test-generation` as the primary smoke-compatibility shell because it represents the test-generation slot without coupling test generation to CVE selection or dependency remediation.
+2. Replace or wrap only the `ai-generate-tests` Task for an early connectivity/translation smoke test. Keep `mvn verify` and `open-pr-tests` as compatibility steps, but do not call this a conformant MVP: clone/package already ran before the slot, credentials are not isolated, and only one tree is executed.
 3. Add VPE/VEX and base/candidate parameters to the adapter request; do not encode them in prompt text or overload the current six-field CVE decision.
-4. Return the existing `TESTS_ADDED` and `PR_URL` results for demo compatibility, plus references to checkpoints, generated patch, execution results, signed record, and limitations.
-5. Add differential execution and evidence publication as explicit tasks or service callbacks before claiming fix validation. The current one-tree `mvn verify` step is not sufficient.
-6. Keep the integrated `maven-build-ci` AI branch as a later composition option after the standalone service-adapter path works. Its current test-generation task runs before `ai-select-cve`, so it is not currently a VPE-initiated fix-pinning flow.
+4. Return run/evidence/test-artifact references as the primary result. Preserve `TESTS_ADDED` and optional `PR_URL` only for demo compatibility.
+5. Redesign conformant sequencing so request admission/preflight occurs before clone/package, human waits release compute, controller/model credentials are separated from repository execution, and base/candidate runs are independent.
+6. Add differential execution and evidence publication before claiming fix validation. The current one-tree `mvn verify` step is not sufficient.
+7. Treat the integrated `maven-build-ci` AI branch as incompatible with vulnerability-driven fix-pinning until its DAG is redesigned: it generates generic tests before CVE selection and never runs a selected-vulnerability test against a known-bad/known-good pair.
 
 This approach allows the demo to show the new service in the existing test-generation position while leaving the high-level Analyze -> Plan -> Code -> Execute design intact.
 
@@ -72,7 +74,7 @@ The MVP request should include, at minimum:
 - Vulnerability identity and supporting evidence references.
 - Repository URL, immutable base commit, candidate/fixed commit or artifact, and intended change/PR reference.
 - Java repository profile or permission to discover it: Maven/Gradle, test framework, module/subdirectory, artifact mirror, and approved commands.
-- SCM provider/host, repository, target branch, PR/MR or issue reference, and publication mode.
+- Immutable source/artifact retrieval reference. SCM provider, PR/MR, and publication mode are optional compatibility fields.
 - Run ID, tenant/authorization context, idempotency key, and callback/evidence destination.
 
 The current demo's `CVE_ID`, `PACKAGE`, `CURRENT_VERSION`, `FIXED_VERSION`, `JUSTIFICATION`, and `SELECTED` values can be retained as compatibility fields, but they are insufficient as the canonical request.
@@ -81,7 +83,7 @@ The current demo's `CVE_ID`, `PACKAGE`, `CURRENT_VERSION`, `FIXED_VERSION`, `JUS
 
 The adapter should preserve current results while adding MVP evidence references:
 
-- `TESTS_ADDED` and `PR_URL` for existing demo consumers.
+- `TESTS_ADDED` and optional `PR_URL` for existing demo consumers.
 - Run/checkpoint status and terminal classification.
 - Exact generated patch and materialized test digests.
 - Base and candidate execution result references.
@@ -100,12 +102,12 @@ Before implementation, reproduce the demo as-is and record:
 2. Which namespace, service accounts, RBAC, PVCs, Secrets, and ConfigMaps are required.
 3. How the GitLab issue comment webhook reaches the EventListener and creates a `PipelineRun`.
 4. How the current task receives the source repository, revision, workspace, Maven settings, agent image, and AI endpoint configuration.
-5. How VEX is represented and loaded: the demo seeds OpenVEX plus CycloneDX artifacts in the Lightwell repository, uploads/uses them through RHTPA, and performs VEX suppression during vulnerability analysis.
+5. How vulnerability status is represented and loaded: the active path ingests OSV and CycloneDX into RHTPA and reconstructs status for suppression; the legacy OpenVEX fixture is inactive and cannot substitute for a source-preserved VPE/VEX input.
 6. How the current six-field CVE decision is produced, reviewed, passed to remediation, and linked to the resulting PR/MR.
 7. What artifacts and Tekton results survive PipelineRun pruning and what must be copied to the audit/evidence store.
 8. What the existing tests-only PR communicates to a reviewer and what the release/policy gate can consume automatically.
 
-The setup runbook is the operational starting point. It requires a cluster with the relevant operators and storage, configures the AI backend before installation, waits for Argo/Tekton resources, creates the AI/SCM/Maven secrets, loads Lightwell remediation data, and smoke-tests `agentic-cve-analysis` followed by `/remediate` or `/generate-tests`. The demo repository is GitOps-managed: local changes have no effect until the configured Argo source repository/branch is updated.
+The setup runbook is the operational starting point. It requires a cluster with the relevant operators and storage, configures the AI backend before installation, waits for Argo/Tekton resources, creates the AI/SCM/Maven secrets, loads OSV/CycloneDX remediation data into RHTPA, and smoke-tests `agentic-cve-analysis` followed by `/remediate` or `/generate-tests`. The demo repository is GitOps-managed: local changes have no effect until the configured Argo source repository/branch is updated.
 
 ## MVP Setup and Swap Sequence
 
@@ -120,9 +122,9 @@ The setup runbook is the operational starting point. It requires a cluster with 
 
 - Add a service endpoint/profile and credentials through the demo's GitOps-managed configuration; do not hard-code credentials in Task YAML.
 - Introduce an adapter Task or wrapper at the existing `ai-generate-tests` slot.
-- Pass a fixture VPE/VEX request with immutable base/candidate identities.
+- Add a version-pinned, source-preserved VPE/VEX fixture to the active GitOps/test path and pass immutable base/candidate identities.
 - Have the adapter call the service, poll or receive a callback, and materialize the approved test patch into the existing workspace contract.
-- Preserve `mvn verify` and PR/MR creation initially, while attaching the service evidence link and signed-record reference.
+- Preserve `mvn verify` initially as a compatibility observation. PR/MR creation is optional and must not gate the VPE-to-Test-Generation demonstration.
 - Add a differential execution path and verify that the exact generated test is run against both sides before presenting a fix-pinning conclusion.
 
 ### Exercise the VPE-initiated path
@@ -136,20 +138,22 @@ VPE VEX finding for a Java dependency
   -> native Java test generation
   -> base/candidate execution
   -> signed differential evidence
-  -> tests-only or linked remediation PR/MR
+  -> generated-test artifact and evidence reference in the SSC demo
 ```
 
-The demo can initially use a platform/SCM trigger or a manually created Tekton `PipelineRun` carrying the same request fixture. A direct production VPE webhook should not be invented until the VPE output schema, authentication, and delivery contract are confirmed.
+The demo can initially use a manually created Tekton `PipelineRun` or platform request carrying the same VPE fixture. A production VPE webhook should not be invented until the VPE output schema, authentication, and delivery contract are confirmed. SCM triggering is included only if the existing demo flow requires it.
 
 ## Current Gaps to Close
 
 | Gap | Current demo behavior | MVP planning response |
 |---|---|---|
 | VPE trigger | RHTPA/Conforma and issue/comment flows; no explicit VPE service contract | Define a fixture and adapter contract before choosing webhook/event transport |
-| VEX input | Sample OpenVEX is seeded and used for RHTPA suppression; the test task does not receive it | Pass immutable VEX document/statement references into the service |
+| VEX input | Active path uses OSV+CycloneDX and RHTPA status suppression; OpenVEX exists only in an inactive legacy component | Add a source-preserved VPE/VEX fixture to the active path and pass immutable document/statement references into the service |
 | Fix comparison | Current test generation validates one tree with `mvn verify` | Add explicit base/candidate subjects and differential execution |
 | Self-verification | Current task has bounded generation retries, not service preflight/failure-register checks | Add stage-zero preflight to the service adapter flow |
-| Evidence | Pipeline results and PR/MR are primary visible outputs | Add signed differential record and audit-store/publication references |
+| Credential isolation | Current task combines model credentials, repository edits, and Maven execution | Separate controller/model, repository execution, and SCM publication pods/service accounts/Secrets |
+| Human checkpoint | Current PipelineRun is linear and opens a PR immediately | Use event-driven continuation with no worker retained during review |
+| Evidence | Pipeline results and PR/MR are current visible outputs | Make signed differential evidence and generated-test artifacts primary; retain PR/MR only as optional compatibility output |
 | Checkpoints | Current flow is largely linear; issue review is outside the task | Preserve service Analyze/Plan checkpoint state and map approval to PipelineRun continuation |
 | Ownership | Demo owns pipeline tasks and SCM publication; Lightwell/evidence ownership is still to confirm | Keep the adapter contract neutral and record owner decisions during the spike |
 | Tool selection | Current demo uses aider/Claude Code options and Maven/JUnit tasks | Treat these as baseline fixtures, not final service-tool selections |
@@ -168,7 +172,7 @@ The demo can initially use a platform/SCM trigger or a manually created Tekton `
 The spike should compare the current Task-based adapter with a direct service/PipelineRun integration, using the same VPE/VEX fixture:
 
 - Where should the service run relative to the demo cluster and Lightwell platform?
-- Should Tekton own execution and PR publication initially, or should the service return artifacts to a dedicated execution Task?
+- Should Tekton own execution initially, or should the service return artifacts to a dedicated execution Task? SCM publication is a separate expansion decision.
 - How are VPE VEX/policy documents retrieved, authenticated, versioned, and preserved?
 - How are base and candidate revisions/artifacts made available and kept equivalent for Java/Maven execution?
 - Which signed evidence format and audit-store interface can the demo consume?
@@ -185,5 +189,5 @@ The spike should compare the current Task-based adapter with a direct service/Pi
 - `pipelines/pipelines/maven-build-ci-pipeline-ai.yaml` for the integrated test-generation slot.
 - `pipelines/triggers/agentic-issue-triggers.yaml` for current `/generate-tests` and `/remediate` event wiring.
 - `pipelines/config/ai-agent-config.yaml` for configurable OpenAI-compatible model endpoints.
-- `automation/gitops/components/lightwell-repo/files/seed/commons-lang3-3.14.0.rhlw-00001.vex.json` for the demo OpenVEX shape.
-- `automation/gitops/components/lightwell-repo/values.yaml` and `README.md` for VEX/CDX seed and ingestion behavior.
+- `automation/gitops/components/lightwell-repo/files/seed/commons-lang3-3.14.0.rhlw-00001.vex.json` for a legacy reference OpenVEX shape; this component is not active.
+- `pipelines/ops/rhtpa-load-lightwell-data.sh` and `pipelines/data/` for active OSV/CycloneDX remediation-data ingestion.

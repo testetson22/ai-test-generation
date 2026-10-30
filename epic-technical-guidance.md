@@ -1,6 +1,6 @@
 # Epic Technical Guidance
 
-Date: Oct 27, 2026
+Date: Oct 30, 2026
 
 ## Purpose
 
@@ -8,9 +8,15 @@ This document translates the proposed AI Test Generation ADR into technical guid
 
 This is implementation guidance, not an additional ADR. Recommendations about specific frameworks remain provisional until the spike verifies licensing, operational fit, maintenance, security, and Lightwell integration constraints.
 
-## Architectural Starting Point
+## Planning Authority and Architectural Starting Point
 
-The Epics should assume the following established boundaries:
+The ADR remains Proposed and the decision ledger still contains open items. For Epic drafting, distinguish:
+
+- **ADR-direction invariants:** constraints already stated by the proposed ADR and used to keep contracts coherent.
+- **Provisional MVP assumptions:** SSC demo, Java/Maven/JUnit, Tekton execution compatibility, human review, and VPE/VEX fixtures; these require confirmation or spike evidence.
+- **Spike-dependent decisions:** implementation frameworks, deployment topology, execution ownership, evidence store/signing system, and long-term publication/automation ownership.
+
+The following are ADR-direction invariants for planning, not a claim that every supporting decision is approved:
 
 - The service is driver-agnostic, but vulnerability prioritization is the initial driver.
 - The user-facing lifecycle is `Analyze -> Plan -> Code -> Execute`.
@@ -32,11 +38,11 @@ The updated AI Test Harness Blueprint Business Case adds implementation directio
 |---|---|---|
 | Red Hat OpenShift AI is named as the landing BU for model serving and the agent runtime | Preferred control-plane landing area, subject to sponsor confirmation and runtime capability validation | Design deployment, identity, model access, and observability for RHOAI first, while keeping domain contracts runtime-neutral |
 | Trusted Software Supply Chain is named as a landing BU for the evidence chain | Preferred evidence/signing integration direction, not final record ownership | Keep `EvidencePublisher`, artifact, signing, and release-gate contracts explicit |
-| The harness runs where the customer's pipeline runs | Established portability requirement for build/test execution | Separate the agent control plane from pluggable Jenkins, Tekton, GitHub Actions, or other execution providers |
-| The initial path is human-reviewed | Established Phase 1 behavior | Use event-driven checkpoints; do not hold execution workers while waiting for approval |
-| Generated tests enter through a pull request | Established publication boundary | Support an update to an existing remediation PR and a separate test-only PR as policy-selected publication modes; neither mode merges automatically |
+| The harness runs where the customer's pipeline runs | Portability direction; MVP provider ownership remains spike-dependent | Use an approved `ExecutionProvider`; evaluate the SSC Tekton environment first |
+| The initial path is human-reviewed | Provisional MVP operating assumption | Use event-driven checkpoints; do not hold execution workers while waiting for approval |
+| The existing SSC flow may use SCM to expose generated tests | Conditional compatibility boundary, not an independent MVP capability | Implement only the minimum adapter behavior required to preserve the current flow; keep broader triggering/publication provider-neutral and optional |
 | Candidates run on both sides of a change | Required where a valid base/candidate pair exists | Treat base/candidate identity and differential execution as first-class contracts, not optional narrative |
-| Signed records are verified at a release gate | Target evidence outcome | Make content identity, attestation, and verification results part of the evidence Epic |
+| Signed records are verified by a policy/evidence consumer | Target evidence outcome; signer, store, and consumer remain open | Define the evidence kernel and selectable signing/publication interfaces before naming an authoritative store or release gate |
 | Every reached behavior is validated, handed off, or a stated gap | Established completeness rule | Require a coverage/disposition map in Plan and final evidence |
 | Failure-register entries run at the start of every release/reference job | Harness release requirement | Start failure-register and golden-reference work with the first Epic, not after implementation |
 | Risk controls model budget and average inference targets | Pilot hypothesis, not yet a hard architectural gate | Capture risk/budget inputs and measurements; baseline before enforcing the 15-second and $0.05 targets |
@@ -50,16 +56,15 @@ The updated AI Test Harness Blueprint Business Case adds implementation directio
 The current planning sources are not fully aligned:
 
 - The Blueprint Business Case describes broader Python/Go pilots; current VPE MVP planning narrows the first implementation focus to Java.
-- The AI Test Generation ADR prioritizes vulnerability evidence as the initial driver; the Blueprint pilot also describes general first-party pull requests.
+- The AI Test Generation ADR prioritizes vulnerability evidence as the initial driver; general first-party pull requests remain expansion scope.
 - The Blueprint describes a platform-agnostic harness, while also naming RHOAI as the model-serving and agent-runtime landing BU.
-- The Secure Software Supply Chain flow updates an existing remediation PR; other documentation describes a test-only PR as the standard delivery path.
+- The Secure Software Supply Chain flow contains existing PR/MR paths, but the VPE-to-Test-Generation MVP need not publish a repository change.
 
-The Java/VEX MVP position resolves two of these planning questions. Before committing later language-adapter and SCM-publication Epics, confirm:
+The Java/VEX MVP position resolves the initial trigger and removes SCM publication from the critical path. Confirm:
 
 1. The first Java repository, build system, test framework, and exact VEX format/version emitted by VPE.
-2. Whether the first demonstration begins with a vulnerability/remediation PR, a general PR, or one example of each.
+2. The VPE request transport/authentication and how immutable base/candidate subjects are supplied to the SSC demo.
 3. Whether RHOAI is a required deployment target for the pilot or the preferred production landing area after a portable local spike.
-4. Whether generated tests update the existing remediation PR, open a linked test-only PR, or support both under repository policy.
 
 ### Recommended MVP slice
 
@@ -67,16 +72,15 @@ Unless stakeholders select otherwise, use the VPE Java/VEX path as the first end
 
 ```text
 VPE VEX output for a Java vulnerability
-  -> remediation PR with base and candidate revisions
-  -> explicit /generate-tests trigger
-  -> RHOAI-hosted or locally equivalent agent control plane
+  -> authenticated VPE/platform request with base and candidate identities
+  -> service control plane using an approved OpenAI-compatible endpoint
   -> evidence-backed native regression/fix-pinning test
-  -> execution in the repository's existing pipeline environment
+  -> execution through the approved SSC Tekton provider or equivalent isolated provider
   -> base/candidate differential result
-  -> signed review evidence attached to the human-reviewed PR
+  -> signed review evidence published through the configured SSC demo evidence path
 ```
 
-This slice exercises the prioritized vulnerability driver, PR workflow, differential requirement, evidence chain, agent runtime, and customer-pipeline portability without requiring autonomous remediation or merge.
+This slice exercises the prioritized vulnerability driver, differential requirement, evidence chain, agent runtime, and SSC execution environment. SCM/PR behavior is included only when the current demo requires it to carry or display the generated test/evidence; it is not a separate MVP objective.
 
 Where the Blueprint Business Case describes resolving dependencies, looking up advisories, and scoring risk, the Epic plan should preserve the ADR boundary: Vulnerability Prioritization or another authoritative source supplies applicability and reachability evidence. AI Test Generation may apply a test-depth or model-budget policy to that evidence, but should not create a second vulnerability scanner or authoritative risk score.
 
@@ -157,16 +161,18 @@ Normalization must not be lossy without an explicit finding. The original conten
 
 The format-selection decision belongs to Vulnerability Prioritization and its authoritative evidence consumers. The AI Test Generation spike should implement the actual upstream format, plus fixtures proving unsupported formats and versions fail explicitly.
 
-## VPE Policy Input Planning
+## VPE Policy Decision Planning and Optional OPA Extension
 
-Vulnerability Prioritization may also supply OPA/Rego policy decisions or policy bundles that determine whether testing is required, its priority, required validation depth, budget class, or downstream handling. Treat these as authoritative upstream policy inputs with explicit scope, not as prompt text.
+Vulnerability Prioritization may supply an evaluated policy decision that determines whether testing is required, its priority, required validation depth, budget class, or downstream handling. For MVP, require only a typed, content-addressed decision reference with obligations and reasons. Treat it as authoritative within its stated scope, not as prompt text.
+
+Executable OPA/Rego bundles are a post-MVP extension unless the spike identifies a concrete decision that requires AI Test Generation-owned run facts unavailable to VPE. The detailed bundle contract below is an option to evaluate, not an MVP commitment.
 
 ### Prefer decisions over executable policy
 
 Support two integration modes:
 
 1. **Evaluated decision:** VPE evaluates its policy and sends a content-addressed `VpePolicyDecision`. This is preferred when the decision depends only on facts already owned by VPE.
-2. **Policy bundle:** VPE sends a signed OPA bundle reference and contract so AI Test Generation can reevaluate a named entrypoint against run-specific facts such as repository feasibility or differential results.
+2. **Optional policy bundle:** VPE sends a signed OPA bundle reference and contract so AI Test Generation can reevaluate a named entrypoint against run-specific facts such as repository feasibility or differential results.
 
 Do not ship executable Rego when a stable decision plus reasons and obligations is sufficient. This reduces runtime coupling and prevents two services from evaluating the same policy against subtly different input documents.
 
@@ -266,10 +272,10 @@ The deployment choice remains open: remote VPE decision API, dedicated OPA servi
 
 ### Epic impact
 
-- **Epic 1:** Define policy decision, bundle reference, evaluation result, obligation, and composition contracts.
-- **Epic 2:** Implement VPE decision ingestion first; add bundle evaluation only for an identified run-specific policy use case.
+- **Epic 1:** Define evaluated policy decision reference, typed obligation, and local composition-result contracts.
+- **Epic 2:** Implement VPE evaluated-decision ingestion. Bundle evaluation is excluded unless an identified run-specific policy use case is approved.
 - **Epic 3/4:** Map recognized obligations to feasibility and test-plan constraints with unknown-obligation rejection.
-- **Epic 7:** Add signed-bundle, schema, undefined-result, version, conflict, and deny-overrides test fixtures.
+- **Epic 7:** Add decision schema, unknown-obligation, expired/indeterminate result, conflict, and deny-overrides test fixtures. Signed-bundle tests apply only if the optional extension is selected.
 - **Epic 8:** Include policy decisions and evaluation provenance in signed review evidence.
 
 The spike should use a fixed VPE decision fixture first. A second spike case should execute a signed bundle only if stakeholders identify a policy that genuinely requires AI Test Generation facts unavailable to VPE.
@@ -281,11 +287,11 @@ The service should produce one signed record that binds the approved test, both 
 The record should support multiple publication paths without creating separate truths:
 
 - Attach a concise human-readable summary and machine-readable evidence link/check to the pull or merge request.
-- Publish the signed attestation and evidence manifest to the approved Lightwell/Trusted Software Supply Chain audit store.
-- Expose a stable machine-readable status/result API for release gates, policy engines, CI systems, and later VEX workflows.
+- Publish the signed attestation and evidence manifest through the configured evidence publisher/store.
+- Expose a stable machine-readable status/result API for configured policy/evidence consumers, CI systems, and later VEX workflows.
 - Retain the full artifacts in content-addressed storage and reference them from both the PR and audit record.
 
-The PR is a discoverable review surface; it is not the authoritative evidence store. The signed record and verified artifact manifest remain authoritative.
+The PR is a discoverable review surface, not a durable evidence store. The immutable service-produced record and verified artifact manifest preserve the evidence; the configured consumer's policy determines authority.
 
 ### Provisional contract
 
@@ -382,7 +388,7 @@ The signing process should:
 4. Store or reference certificate, transparency, or enterprise verification material.
 5. Produce a separately recorded `AttestationVerificationResult` consumed by the release/review gate.
 
-Signing establishes origin and tamper evidence. It does not establish that the oracle was correct, the environment represented production, or the vulnerability is exploitable. Those claims remain limited by the signed comparison and its cited evidence.
+Signing establishes origin and tamper evidence. It does not establish that the expected behavior/pass-fail criteria were correct, the environment represented production, or the vulnerability is exploitable. Those claims remain limited by the signed comparison and its cited evidence.
 
 ### Epic impact
 
@@ -436,12 +442,10 @@ Distinguish startup/platform health from per-run preflight. A healthy service ca
 The stable integration pattern is application-to-model-serving, not embedding product orchestration in the model server:
 
 ```text
-Lightwell / Red Hat console platform
-  -> AI Test Generation platform/plugin interface
+VPE / SSC platform request
+  -> AI Test Generation service interface
        -> AI Test Generation API and workflow controller
        -> preflight self-verification and failure-register checks
-       -> SCM plugin/provider adapter
-            -> GitHub/GitLab/enterprise SCM
        -> checkpoint database
        -> artifact/evidence store
        -> ModelTaskRunner
@@ -449,8 +453,12 @@ Lightwell / Red Hat console platform
                  -> KServe/LLM serving runtime
                  -> vLLM or other approved inference backend
        -> ExecutionProvider
-            -> Tekton/Jenkins/GitHub Actions/customer CI
+            -> SSC Tekton or another approved execution-provider pipeline
                  -> ephemeral repository test workers
+
+Conditional SSC compatibility interface
+  -> SCM plugin/provider adapter
+       -> GitHub/GitLab/enterprise SCM
 ```
 
 The exact RHOAI resources vary by installed version and platform configuration, but the application contract should remain stable:
@@ -463,9 +471,9 @@ The exact RHOAI resources vary by installed version and platform configuration, 
 6. Workflow checkpoints and evidence live in service-owned durable stores, not model-server memory or chat history.
 7. Repository builds and generated tests run in isolated CI/execution workers, never in the inference pod or interactive workbench.
 
-## Source-Control Integration
+## Conditional Source-Control Compatibility
 
-The service needs a provider-neutral source-control capability, but that capability may be exposed through a Lightwell or Red Hat console platform plugin rather than a public endpoint owned directly by AI Test Generation. The plugin is one interface for the tool: it can present repository/PR context, launch `/generate-tests`, show checkpoints and evidence, and request approved publication actions.
+Source control is not an independent VPE-to-Test-Generation MVP capability. However, the existing SSC demo may require limited SCM behavior to supply source or expose the generated test and evidence. Implement that minimum compatibility seam when necessary, without broadening MVP scope into general webhook, provider, PR/MR, comment, or repository-promotion support. Any retained interface should remain provider-neutral.
 
 Keep three concerns separate:
 
@@ -541,7 +549,7 @@ ScmGenerationRequest
   idempotency_key
   callback_ref
 
-ScmPublicationRequest
+PublicationIntent
   target
   patch_ref
   patch_digest
@@ -568,22 +576,30 @@ ScmPublicationResult
 ### SCM adapter interface
 
 ```text
-ScmProviderAdapter
+ScmReader
   verify_event(raw_event, provider_config)
   normalize_event(raw_event)
   resolve_target(target_ref)
   get_repository_snapshot(target, access_policy)
   get_change_metadata(target)
-  create_branch(target, branch_policy)
-  apply_test_patch(target, patch, write_policy)
-  create_or_update_change(request)
+
+ScmStatusPublisher
   publish_check(request)
   publish_comment(request)
   attach_artifact(request)
+
+ChangePublicationPlanner
+  validate_intent(intent)
+  plan(intent, provider_capabilities)
+
+ChangePublicationExecutor
+  create_branch(target, branch_policy)
+  apply_test_patch(target, patch, write_policy)
+  create_or_update_change(request)
   get_publication_status(provider_object_ref)
 ```
 
-All mutating operations should be explicit and policy-authorized. The model and repository content cannot invoke SCM mutations directly. The service should be able to run in read-only mode during Analyze/Plan and require a separate approval token or checkpoint decision for branch, commit, PR/MR, comment, or label changes.
+All mutating operations should be explicit and policy-authorized. The executor may be the SSC pipeline's existing `open-pr-tests` Task rather than the service. The model and repository content cannot invoke SCM mutations directly. The service should be able to run in read-only mode during Analyze/Plan and require a separate approval token or checkpoint decision for branch, commit, PR/MR, comment, or label changes.
 
 ### Security and correctness requirements
 
@@ -737,30 +753,25 @@ RHOAI Data Science Pipelines may be useful for model-development/evaluation jobs
 - What telemetry can be exported to OpenTelemetry, and what prompt/source retention occurs in the serving or gateway layer?
 - Which artifacts identify the served model and runtime strongly enough for `ModelInvocationRecord` and signed evidence?
 
-For the first spike, deploy the controller as an ordinary containerized OpenShift service and integrate one approved RHOAI endpoint through `ModelTaskRunner`. Adopt an additional RHOAI agent-runtime abstraction only if it demonstrably supplies required lifecycle capabilities without replacing the service-owned contracts.
+For the first spike, deploy the controller as an ordinary containerized OpenShift service and integrate one approved demo-compatible OpenAI endpoint through `ModelTaskRunner`. An RHOAI endpoint is preferred when available but is not an MVP architecture dependency. Adopt an additional RHOAI agent-runtime abstraction only if it demonstrably supplies required lifecycle capabilities without replacing the service-owned contracts.
 
 ### Recommended shortlist
 
 | Layer | Leading candidate | Alternative | Guidance before the spike |
 |---|---|---|---|
-| Deployment/model runtime | RHOAI model serving and supported agent runtime | Portable container plus provider gateway | Treat RHOAI as the preferred integration target, not as a domain-contract dependency |
-| Stage orchestration | LangGraph | Explicit application state machine | Prototype only behind a `WorkflowController` interface |
+| Deployment/model runtime | Portable OpenShift service plus approved OpenAI-compatible endpoint | RHOAI model serving/agent hosting where available | Treat RHOAI as an endpoint/deployment candidate, not as a domain-contract dependency |
+| Stage orchestration | Explicit application state machine | LangGraph if measured lifecycle code warrants it | Start with service-owned state; prototype a framework only behind `WorkflowController` |
 | Durable distributed workflow | Lightwell-native workflow, if available | Temporal | Do not introduce Temporal until Lightwell durability and callback capabilities are known |
 | Typed model tasks | RHOAI-served models through `ModelTaskRunner`; Pydantic AI or direct SDK implementation | LangChain model/tool abstractions | Keep serving endpoint, model, and SDK choices outside domain contracts |
 | Domain test-generation harness | Adapt selected `ai-test-harness` components | Implement equivalent gates; learn from `fullsend-ai/test-creator` | Evaluate by capability, not as an all-or-nothing adoption |
 | Evaluation | Internal golden-reference runner plus native test tools | Pydantic Evals or LangSmith as optional accelerators | Keep benchmark definitions and pass/fail policy in service-owned data |
 | Observability | OpenTelemetry | Framework-specific tracing exported to OpenTelemetry | Traces must remain portable and redact prompts, source, credentials, and vulnerability data by policy |
 
-For the spike, use two deliberate implementations of the same thin slice and deploy the candidate to an RHOAI-compatible environment when one is available:
-
-- **Control:** explicit application state machine, direct provider SDK behind `ModelTaskRunner`, and fake/local execution provider.
-- **Candidate:** LangGraph for stage routing and Pydantic AI for typed model tasks, using the same domain contracts and fake/local execution provider.
-
-This comparison establishes whether the frameworks reduce meaningful lifecycle code without becoming the source of domain state. It also separates model-serving/runtime integration from framework selection. Defer Temporal and other distributed workflow infrastructure until the Lightwell workflow boundary is understood.
+For the spike, use an explicit application state machine, a deterministic fake model for contract tests, and the current demo-compatible endpoint behind `ModelTaskRunner`. Evaluate LangGraph, Pydantic AI, or another framework only if the baseline exposes lifecycle or structured-output code they materially reduce. Do not require dual implementations before proving the SSC adapter and VPE/VEX vertical slice. Defer Temporal and other distributed workflow infrastructure until callback, durability, and ownership gaps are measured.
 
 ### LangGraph
 
-LangGraph is the strongest agent-orchestration candidate because its documented strengths match the lifecycle: explicit graphs, persistence, interrupts, human-in-the-loop checkpoints, and a mixture of deterministic and model-driven nodes. It is appropriate for routing between Analyze, Plan, Code, Execute, bounded repair, and review.
+LangGraph is an orchestration candidate because its documented strengths match explicit graphs, persistence, interrupts, and mixed deterministic/model nodes. It should be evaluated only if the explicit state-machine spike demonstrates a concrete need.
 
 Use it only as an internal controller implementation. Domain state must use service-owned schemas, and externally visible checkpoint IDs and statuses must not be LangGraph-specific. A Lightwell or Temporal workflow should be able to invoke the same stage services later.
 
@@ -776,7 +787,7 @@ The spike should verify:
 
 ### Pydantic AI
 
-Pydantic AI is a strong candidate for individual model tasks because it provides typed dependencies, structured outputs, tool validation, model-provider abstraction, testing support, and OpenTelemetry-compatible instrumentation. It is a better fit for `AnalyzeRepository`, `ProposeTestPlan`, and `GenerateNativeTests` than for owning the entire product lifecycle.
+Pydantic AI is a candidate for individual model tasks because it provides typed dependencies, structured outputs, tool validation, testing support, and instrumentation. It is not required for the MVP and is a better fit for bounded model tasks than for owning the product lifecycle.
 
 Use a service-owned `ModelTaskRunner` interface even if Pydantic AI is selected. Model identifiers, provider settings, prompt versions, budgets, and output schemas belong in service configuration and provenance, not in domain objects.
 
@@ -874,13 +885,33 @@ PhaseResult<T>
 
 `failed` means the phase itself malfunctioned or violated its contract. `blocked` and `partial` are valid domain outcomes. For example, unavailable component infrastructure is a feasibility constraint, not a service failure.
 
+### Canonical status hierarchy
+
+Do not collapse operational status, observed behavior, gate decisions, and publication into one `status` field:
+
+| Type | Purpose | Example values |
+|---|---|---|
+| `RunLifecycleStatus` | Overall orchestration progress | `accepted`, `running`, `awaiting_decision`, `completed`, `cancelled`, `terminal` |
+| `PhaseOperationalStatus` | Whether a phase operated correctly | `completed`, `partial`, `blocked`, `failed`, `cancelled` |
+| `ExecutionOperationalStatus` | Whether one subject execution produced usable observations | `completed`, `setup_failed`, `timed_out`, `policy_blocked`, `cancelled`, `infrastructure_failed` |
+| `BehaviorObservation` | What one execution observed | `expected_vulnerable_behavior`, `expected_fixed_behavior`, `behavior_not_reached`, `reached_not_reproduced`, `unexpected_behavior`, `not_observed` |
+| `DifferentialClassification` | Deterministic comparison of two execution records | `fix_pinned`, `both_pass`, `both_fail`, `regression`, `environment_mismatch`, `inconclusive`, `not_comparable` |
+| `GateDecision` | Policy decision over evidence | `pass`, `fail`, `require_review`, `not_applicable`, `indeterminate` |
+| `PublicationStatus` | External evidence/change publication | `not_requested`, `pending`, `published`, `failed`, `superseded` |
+
+Mappings between these types are deterministic and versioned. Consumers must not infer `GateDecision=pass` from `ExecutionOperationalStatus=completed`, or `not_affected` from any non-reproduction observation.
+
+`RunTerminalRecord` captures runs that end before a differential comparison exists: terminal phase, reason, available input/artifact/evidence references, limitations, retryability, and next allowed action. It is not a substitute for `SignedDifferentialTestRecord`.
+
 ### Pipeline summary
 
 | Phase | Primary inputs | Primary outputs | Next consumer |
 |---|---|---|---|
-| Preflight self-verification | Service configuration, adapter/runtime versions, endpoint/policy/artifact capabilities, failure-register cases | `PreflightResult`, capability/readiness findings | Vulnerability prioritization input adapter or terminal blocked status |
+| Platform readiness | Deployed configuration, required platform resources, adapters/endpoints/stores, failure-register cases | `PlatformReadinessResult`, capability/readiness findings | Run admission or platform remediation |
+| Run admission | Authenticated request envelope, requested capabilities, tenant/policy context | `RunAdmissionResult`, durable run ID, accepted capability set | Vulnerability prioritization input adapter or terminal run record |
 | Vulnerability prioritization input adapter | `TestGenerationRequest`, `VulnerabilityDriverPayload`, authorization and policy references | `IntakeResult`, `EvidenceBundle`, normalized driver context | Repository/context analysis |
 | Repository/context analysis | Accepted intake, repository target, evidence bundle, repository access | `ContextAnalysisResult`, `RepositoryProfile`, objective candidates, analysis checkpoint | Feasibility assessment |
+| Target preconditions | Resolved evidence, repository profile, immutable subjects, execution/signing availability | `TargetPreconditionResult`, target-specific capability findings | Feasibility assessment or terminal run record |
 | Feasibility assessment | Repository profile, objective candidates, policies, execution-provider capabilities | `FeasibilityAssessment`, candidate validation strategies, required decisions | Test planning |
 | Test planning and user checkpoint | Evidence, context analysis, feasibility, objective candidates, prior feedback | `TestPlan`, `StageCheckpoint`, stated gaps, approval request | Native framework generation after approval |
 | Native framework generation | Approved plan/checkpoint digests, source snapshot, repository profile, adapter capability | `GenerationResult`, exact candidate patch, generation findings | Isolated execution |
@@ -895,10 +926,10 @@ A pipeline phase should not automatically become a separately deployed service. 
 | Boundary | Likely interaction | Contract family |
 |---|---|---|
 | Lightwell -> AI Test Generation | Synchronous acceptance plus asynchronous lifecycle updates | `TestGenerationRequest`, request disposition, checkpoint/status events |
-| Lightwell/console plugin -> AI Test Generation | Authenticated platform command or normalized event | platform/plugin request, `ScmTarget`, `ScmGenerationRequest`, delivery/idempotency result |
-| SCM provider -> platform or AI Test Generation | Webhook, only where platform does not own ingestion | `ScmEvent`, delivery verification, normalized event |
+| Expansion: Lightwell/console plugin -> AI Test Generation | Authenticated platform command or normalized event | platform/plugin request, `ScmTarget`, `ScmGenerationRequest`, delivery/idempotency result |
+| Expansion: SCM provider -> platform or AI Test Generation | Webhook, only where platform does not own ingestion | `ScmEvent`, delivery verification, normalized event |
 | AI Test Generation -> Vulnerability Prioritization/Lightwell evidence | Authorized reference resolution | `EvidenceReference`, `EvidenceBundle`, resolution findings |
-| AI Test Generation -> source control/source provider | Read immutable revision; later propose test-only change | source snapshot reference, `ChangeProposal`, publication result |
+| AI Test Generation -> source provider | Read immutable revision/artifact for MVP; optional SCM mutation later | source snapshot reference; expansion `PublicationIntent`/result |
 | Controller -> execution environment | Asynchronous job and callback/event | `ExecutionRequest`, execution status event, `ExecutionResult` |
 | All phases -> artifact store | Content-addressed write/read/verify | `ArtifactReference`, digest, metadata, retention classification |
 | AI Test Generation -> Lightwell evidence/review workflow | Publish signed differential evidence, evidence manifest, and review state | `SignedDifferentialTestRecord`, `EvidenceManifest`, `ReviewPacket`, publication result |
@@ -906,6 +937,8 @@ A pipeline phase should not automatically become a separately deployed service. 
 Repository analysis, feasibility, planning, generation, and quality evaluation can initially be internal modules with versioned typed objects. They should be split into network services only when scaling, security isolation, ownership, or deployment cadence requires it.
 
 ### 1. Vulnerability prioritization input adapter
+
+Platform readiness and run admission precede this adapter. Target preconditions follow authorized evidence resolution and repository analysis; the combined preflight contract is described below.
 
 **Responsibility:** Validate the invocation, resolve authorized upstream references, and translate the Vulnerability Prioritization vocabulary into a stable driver contract. It does not reinterpret upstream vulnerability conclusions or plan tests.
 
@@ -932,33 +965,17 @@ Repository analysis, feasibility, planning, generation, and quality evaluation c
 - Unsupported driver versions and unauthorized references fail before repository access.
 - Missing optional evidence can produce `accepted_with_gaps`; missing identity or authorization produces `rejected` or `blocked`.
 
-### Preflight self-verification (stage zero)
+### Platform readiness, run admission, and target preconditions
 
-**Responsibility:** Verify that the service can safely and reproducibly perform the requested run before consuming request-specific evidence or invoking model/repository work.
+Preflight is split so health checks do not consume customer evidence and target checks do not pretend to run before target discovery:
 
-**Inputs:**
+1. **Platform readiness** runs at startup, on configuration change, or on schedule. It verifies schema/adapter compatibility, required Secrets/RBAC/storage/network resources, model endpoint conformance, execution-provider reachability, artifact/evidence interfaces, and the versioned failure register.
+2. **Run admission** authenticates the request envelope, creates the durable run ID, validates tenant/policy/requested capabilities, and rejects unsupported or unauthorized work before evidence resolution, repository access, model calls, or execution dispatch.
+3. **Target preconditions** run after authorized evidence and repository/subject identity are resolved. They verify the Java adapter/profile, immutable base/candidate availability, approved commands, artifact mirror, execution environment, signing/evidence capability, and any target-specific policy obligation.
 
-- Service and contract configuration, schema versions, adapter versions, and enabled capabilities.
-- Requested capability set and policy requirements, once the request envelope is authenticated.
-- Model endpoint profile and structured-output conformance status.
-- VEX/VPE parser and policy-evaluation capability.
-- SCM/platform connection health and read-only authorization.
-- Java framework adapter, approved command profiles, execution provider, artifact store, signing, and audit-store capabilities.
-- Versioned failure-register and golden self-check cases.
+Use `PlatformReadinessResult`, `RunAdmissionResult`, and `TargetPreconditionResult` rather than one overloaded object. A failed admission produces a `RunTerminalRecord`; it does not produce a `SignedDifferentialTestRecord`, because no two execution records or comparison exist.
 
-**Outputs:**
-
-- `PreflightResult` with readiness status, check results, tool/runtime identities, policy versions, timestamps, and limitations.
-- Capability map identifying `ready`, `degraded`, `blocked`, or `not_requested` functions.
-- Failure-register and self-check evidence references.
-- Allowed next action: proceed, degrade to an explicitly permitted capability, retry platform health, or terminate without request-specific evidence.
-
-**Handoff rules:**
-
-- Required check failure is fail-closed and prevents downstream model, repository, execution, PR, or evidence work.
-- A preflight pass proves service readiness only; it does not establish anything about the target vulnerability or repository behavior.
-- Run-specific preflight is repeated when the endpoint, policy, adapter, artifact, or execution context changes materially.
-- Preflight output is itself auditable but must not be presented as customer test evidence.
+Required failure is fail-closed. A degraded capability is permitted only when it was not requested and policy allows the degradation. None of these results establish anything about target behavior, and none may be presented as customer test evidence.
 
 ### 2. Repository/context analysis
 
@@ -1021,13 +1038,13 @@ For a VPE/VEX `fixed` or remediation objective, feasibility confirms that author
 
 ### 4. Test planning and user checkpoint
 
-**Responsibility:** Convert evidence-backed objectives and feasible strategies into reviewable scenarios with explicit setup, action, oracle, cleanup, exclusions, and limitations.
+**Responsibility:** Convert evidence-backed objectives and feasible strategies into reviewable scenarios with explicit setup, action, expected behavior/pass-fail criteria, cleanup, exclusions, and limitations.
 
 **Inputs:**
 
 - `EvidenceBundle`, `ContextAnalysisResult`, `RepositoryProfile`, `ObjectiveCandidate[]`, and `FeasibilityAssessment`.
 - Existing-test inventory and duplicate candidates.
-- Oracle-source precedence and test-quality policy.
+- Expected-behavior source precedence and test-quality policy.
 - Applicable VPE policy obligations and deterministic policy-composition result.
 - Prior `FeedbackDecision[]` when revising a plan.
 - Model-task configuration and budget for semantic planning.
@@ -1035,7 +1052,7 @@ For a VPE/VEX `fixed` or remediation objective, feasibility confirms that author
 **Outputs:**
 
 - Versioned `TestObjective[]` selected from or refined from the objective candidates.
-- `TestPlan` with scenarios, test levels, framework, setup, action, oracle, boundaries, mock policy, cleanup, comparison semantics, and evidence citations.
+- `TestPlan` with scenarios, test levels, framework, setup, action, expected behavior/pass-fail criteria, boundaries, mock policy, cleanup, comparison semantics, and evidence citations.
 - `CoverageMap` from upstream objective/evidence to planned scenario, team handoff, or stated gap.
 - `StatedGap[]` and `RequiredDecision[]` for unsupported, unsafe, ambiguous, or environment-specific cases.
 - Plan `StageCheckpoint` with the plan artifact digest and allowed decisions.
@@ -1045,7 +1062,7 @@ For a VPE/VEX `fixed` or remediation objective, feasibility confirms that author
 
 - Generation accepts only an approved checkpoint whose decision binds the exact plan digest.
 - Every in-scope objective appears in the coverage map; omission is not an allowed state.
-- Every oracle cites an attributable source or is explicitly labeled characterization.
+- Every expected behavior cites an attributable source or is explicitly labeled characterization.
 - A model can propose scenarios but cannot approve its own plan, authorize destructive actions, or resolve conflicting authoritative sources.
 
 ### 5. Native framework generation
@@ -1073,7 +1090,7 @@ For a VPE/VEX `fixed` or remediation objective, feasibility confirms that author
 
 - The patch may change only approved test/fixture paths unless an explicit decision expands scope.
 - The generation result must bind source, profile, plan, adapter, prompt, model, and patch digests.
-- Repairs cannot weaken assertions, add skips/retries, alter the oracle, or edit production code without routing to review or Plan.
+- Repairs cannot weaken assertions, add skips/retries, alter expected behavior/pass-fail criteria, or edit production code without routing to review or Plan.
 - Execution receives the exact generated patch digest; regenerated text requires a new generation revision.
 
 ### 6. Isolated execution
@@ -1180,10 +1197,10 @@ The pipeline is not strictly one-way. Typed outcomes route back to the phase tha
 | Evidence reference stale or subject mismatch | Input adapter | Reject or request refreshed evidence |
 | Repository convention or required service missing | Repository/context analysis | Revise profile or record gap |
 | Validation strategy unavailable or unauthorized | Feasibility | Select lower-fidelity strategy, request authorization, or record gap |
-| Wrong scope, duplicate scenario, or unsupported oracle | Planning | Revise plan and obtain new approval |
+| Wrong scope, duplicate scenario, or unsupported expected behavior | Planning | Revise plan and obtain new approval |
 | Syntax, fixture, import, or framework-use error | Generation | Bounded Code repair |
 | Environment setup, runner, or service failure | Execution/Analyze | Retry infrastructure or revise environment context |
-| Test reaches target but asserts wrong behavior | Planning | Revise oracle; do not weaken assertion in Code |
+| Test reaches target but asserts wrong behavior | Planning | Revise expected behavior/pass-fail criteria; do not weaken assertion in Code |
 | Test does not exercise the stated objective | Planning or generation | Revise scenario or implementation |
 | Exact patch/provenance mismatch | Generation/execution boundary | Reject and regenerate execution request |
 
@@ -1199,22 +1216,36 @@ The request envelope remains stable while drivers provide typed payloads:
 {
   "schema_version": "1.0",
   "request_id": "tgr-123",
-  "correlation_id": "lightwell-run-456",
+  "correlation_id": "ssc-pipelinerun-456",
+  "tenant_ref": "tenant://demo",
+  "authorization_context_ref": "authz://decisions/789",
   "driver": {
     "type": "vulnerability",
     "version": "1.0",
     "payload_ref": "evidence://requests/tgr-123/vulnerability.json"
   },
   "target": {
-    "repository": "https://example.invalid/org/repo",
-    "revision": "sha256-or-git-sha",
-    "comparison_revision": null,
-    "artifact_refs": []
+    "repository_ref": "source://ssc-demo/java-app",
+    "base_subject": {
+      "git_commit": "0123456789abcdef",
+      "artifact_refs": []
+    },
+    "candidate_subject": {
+      "git_commit": "fedcba9876543210",
+      "artifact_refs": []
+    },
+    "intended_change_ref": null,
+    "repository_profile_ref": "profile://java/maven-junit-v1",
+    "build_settings_ref": "secret-ref://tssc-app-ci/maven-settings",
+    "execution_provider_hint": "ssc-tekton"
   },
   "requested_capabilities": ["analyze", "plan", "generate", "execute"],
   "policy_ref": "policy://atg/default-v1",
-  "callback_ref": "callback://lightwell/runs/456",
-  "idempotency_key": "lightwell-run-456:v1"
+  "publication_intent_ref": null,
+  "evidence_destination_ref": "evidence-store://configured/default",
+  "external_workflow_ref": "tekton://tssc-app-ci/pipelineruns/run-456",
+  "callback_ref": "callback://atg/runs/456",
+  "idempotency_key": "ssc-pipelinerun-456:v1"
 }
 ```
 
@@ -1242,7 +1273,7 @@ The initial payload should reference upstream evidence rather than copy its conc
 }
 ```
 
-References must carry or resolve to issuer, revision, digest, and authorization metadata. The input adapter validates and normalizes the VEX format/version and policy decision/bundle emitted by Vulnerability Prioritization while preserving the original sources. The service can derive test objectives and constraints from these inputs but cannot change the upstream records or policies.
+References must carry or resolve to issuer, revision, digest, and authorization metadata. The input adapter validates and normalizes the VEX format/version and any evaluated policy decision emitted by Vulnerability Prioritization while preserving the original sources. Executable policy bundles are optional post-MVP input unless the spike identifies a decision that requires AI Test Generation-owned run facts. The service can derive test objectives and constraints from these inputs but cannot change the upstream records or policies.
 
 Future drivers should implement the same logical interface:
 
@@ -1322,7 +1353,7 @@ Use a status per capability instead of one ascending level because a repository 
 - Required comparison semantics.
 - Known limitations and safety flags.
 
-Each `TestPlan` scenario should contain requirement/objective IDs, test level, setup, action, oracle, boundaries, mock policy, cleanup, existing-test exclusions, required environment, destructive flag, and evidence supporting the oracle. Plan approval must bind to the plan digest so later generation cannot silently use a revised plan.
+Each `TestPlan` scenario should contain requirement/objective IDs, test level, setup, action, expected behavior, pass/fail criteria, boundaries, mock policy, cleanup, existing-test exclusions, required environment, destructive flag, and evidence supporting the expected behavior. Plan approval must bind to the plan digest so later generation cannot silently use a revised plan.
 
 ### 7. `StageCheckpoint`
 
@@ -1332,6 +1363,7 @@ The checkpoint is a service-domain object, not a serialized framework graph:
 {
   "checkpoint_id": "cp-123",
   "run_id": "run-123",
+  "external_workflow_ref": "tekton://tssc-app-ci/pipelineruns/run-456",
   "stage": "plan",
   "stage_revision": 3,
   "status": "awaiting_review",
@@ -1341,12 +1373,16 @@ The checkpoint is a service-domain object, not a serialized framework graph:
   "assumptions": [],
   "open_questions": [],
   "attempts_used": 1,
+  "expires_at": "2026-10-31T00:00:00Z",
+  "required_actor_role": "test-plan-approver",
+  "external_worker_active": false,
+  "callback_delivery_status": "not_requested",
   "next_allowed_actions": ["approve", "revise", "reject"],
   "supersedes": "cp-122"
 }
 ```
 
-Checkpoints are append-only. A revision supersedes an earlier checkpoint; it does not mutate the evidence that supported the earlier decision.
+Checkpoints are append-only. A revision supersedes an earlier checkpoint; it does not mutate the evidence that supported the earlier decision. Tekton status is a correlated external workflow observation, not the authoritative checkpoint. Stale, expired, wrong-role, or wrong-digest decisions are rejected with a recorded reason.
 
 ### 8. `FeedbackDecision`
 
@@ -1379,20 +1415,21 @@ The exact patch digest must be carried into execution and publication to prevent
 `ExecutionRequest` is an authorization-scoped command for an external worker:
 
 - Repository and exact patch digests.
-- Base/candidate artifact or revision identities.
+- Exactly one subject/environment/attempt identity; base and candidate are submitted as separate requests.
 - Approved command IDs from `RepositoryProfile`; no model-authored shell string.
 - Sandbox profile, image digest, resources, timeout, egress policy, and credential references.
 - Required artifacts and result callback.
 - Idempotency key and cancellation token.
 
-`ExecutionResult` separates infrastructure and behavioral outcomes:
+One immutable `ExecutionResult` is produced per subject/environment/attempt and separates operational status from behavioral observation:
 
 - Worker, sandbox, image, command, source, and patch identities.
 - Collection and test counts.
-- Base and candidate results when differential.
-- Normalized result state: `validated`, `reproduced`, `fixed_behavior`, `reached_not_reproduced`, `not_reached`, `blocked`, `environment_mismatch`, or `inconclusive`.
-- Raw artifact references, coverage/mutation/stability references, and limitations.
+- `ExecutionOperationalStatus` and `BehaviorObservation` from the canonical status hierarchy.
+- Raw artifact references, required JUnit/log/environment references, optional capability-advertised coverage/mutation/stability references, and limitations.
 - Attestation or signature reference when required.
+
+`DifferentialComparison` references one base and one candidate `ExecutionResult`, records test/environment equivalence, and emits `DifferentialClassification`. If either side never produces an execution record, emit a `RunTerminalRecord`; do not fabricate a comparison.
 
 ### 11. `QualityAssessment`
 
@@ -1425,7 +1462,7 @@ Do not retain chain-of-thought. Retain attributable inputs, outputs, decisions, 
 
 ### 13. `SignedDifferentialTestRecord`
 
-The signed record is the portable, release-gate-verifiable summary of a differential run. It references rather than embeds:
+The signed record is the portable, consumer-verifiable summary of a differential run. It references rather than embeds:
 
 - Approved plan and exact generated patch.
 - Base and candidate subject identities.
@@ -1437,7 +1474,7 @@ The signed record is the portable, release-gate-verifiable summary of a differen
 - Complete artifact-manifest digest and limitations.
 - Signing identity, envelope, signature, and verification result.
 
-The record is emitted for conclusive, inconclusive, blocked, and failed comparisons so absence of evidence cannot be confused with a passing gate.
+The record is emitted for conclusive or inconclusive comparisons after both execution records and a `DifferentialComparison` exist. Admission, precondition, or missing-side failures emit a `RunTerminalRecord` with available evidence so absence of a differential record cannot be confused with a passing gate.
 
 ### Industry-format boundary
 
@@ -1491,13 +1528,73 @@ WorkflowController
   apply_decision(feedback)
   resume(checkpoint_id)
   cancel(run_id)
+
+TektonCompatibilityAdapter
+  accept(pipeline_request)
+  normalize(pipeline_request)
+  publish_status(run_status_ref)
+  materialize_patch(patch_ref, expected_digest)
+  request_continuation(checkpoint_ref, decision_ref)
+  publish_compatibility_results(tests_added, pr_url, evidence_ref)
 ```
+
+The legacy-facing result is intentionally small and non-authoritative:
+
+```text
+SscTektonCompatibilityResult
+  TESTS_ADDED
+  PR_URL (optional)
+  RUN_REF
+  EVIDENCE_REF
+  terminal_status
+```
+
+Tekton result-size limits apply. These fields point to canonical service records and may be deprecated after all demo consumers use the versioned API/evidence contracts.
 
 Adapters should declare capabilities rather than force callers to infer them. For example, a pytest adapter may support collection and coverage but not mutation; an execution provider may support restricted egress but not privileged containers.
 
-## Decisions That Can Be Established Before the Spike
+## SSC Demo MVP Constraints
 
-The following are framework-independent and can be accepted as Epic constraints now:
+The SSC demo is the MVP host and compatibility target, not the source of the service architecture. Its current test-generation slot is useful for baseline measurement and adapter smoke testing, but replacing only `ai-generate-tests` does not produce a conformant MVP.
+
+| Demo fact | Planning consequence |
+|---|---|
+| `agentic-test-generation` runs `clone -> package -> ai-generate-tests -> mvn verify -> PR/MR` | An adapter inserted at `ai-generate-tests` is smoke compatibility mode because repository access and Maven execution already occurred before service preflight |
+| The active GitOps path loads OSV advisories and CycloneDX documents into RHTPA | Add an explicit, version-pinned VPE/VEX fixture to the active path; the OpenVEX file under the inactive legacy Nexus component is reference data, not an active upstream contract |
+| RHTPA reconstructs fixed/not-affected status for suppression | Treat suppression output as supporting evidence, not as source-preserved `NormalizedVexInput` |
+| The current task has one mutable checkout and one candidate-side `mvn verify` | MVP differential execution requires immutable base/candidate subjects, two independent executions, and deterministic comparison |
+| The current agent container receives model credentials, edits source, and executes Maven | Separate the model/controller and untrusted repository execution identities, pods, and credentials before MVP acceptance; optional SCM publication remains separately isolated |
+| The current PipelineRun is linear and opens a PR immediately | Human Analyze/Plan review requires event-driven continuation; no pod waits for approval |
+| Current results are `TESTS_ADDED`, Maven status, and `PR_URL` | Preserve these only as compatibility outputs; canonical results are bounded references to durable artifacts, checkpoints, execution records, and signed evidence |
+| Tekton resources are plain YAML reconciled by Argo self-heal | Demo integration changes require a GitOps source/branch and rollback plan; `oc edit` is not an implementation path |
+| The current AI ConfigMap is one global endpoint profile and can disable TLS verification | Treat it as baseline-only; shared MVP environments require an approved endpoint profile, TLS verification, capability conformance, and provenance identity |
+
+### Smoke compatibility versus conformant MVP
+
+**Smoke compatibility mode** replaces or wraps the current `ai-generate-tests` Task, returns `TESTS_ADDED`, materializes a test patch into the existing workspace, and preserves the current `mvn verify`/PR steps. It validates connectivity and contract translation only. It must not claim stage-zero protection, human checkpoint durability, credential isolation, or differential fix validation.
+
+**Conformant MVP mode** moves request acceptance and required preflight before repository clone/build; uses source-preserved VPE/VEX input; resolves immutable base/candidate subjects; separates controller and execution credentials; pauses without allocated compute; runs the exact approved test independently on both subjects; persists artifacts before PipelineRun/PVC cleanup; and publishes verified signed evidence. Optional SCM publication remains separately isolated.
+
+The MVP Epics should implement smoke compatibility early for learning, then demonstrate conformant mode before declaring the SSC demo integration complete.
+
+### Demo-specific operational contract
+
+The Tekton/service boundary needs explicit lifecycle behavior beyond task parameters:
+
+- Request acceptance deadline and durable run ID before asynchronous work.
+- Per-stage and total deadlines, including bounded model and Maven execution time.
+- Retry ownership so Tekton, the service, and workers do not multiply attempts.
+- Authenticated, idempotent callbacks and decision/resume operations.
+- Cancellation propagation to queued and running workers.
+- Artifact upload before workspace, PVC, pod, or PipelineRun deletion.
+- Cleanup result, retention classification, and recovery after controller/worker restart.
+- Immutable image, source, command-profile, endpoint-profile, and policy identities even when demo YAML begins with mutable tags.
+
+Missing secret-backed workspaces can prevent a Task from starting, so platform readiness checks for required Secrets, PVC/storage, service accounts, RBAC, Routes, and ConfigMaps must occur before creating the conformant execution PipelineRun. In-task preflight alone cannot cover that failure mode.
+
+## Contract Constraints Usable Before the Spike
+
+The following are framework-independent planning constraints from the proposed ADR or safety/correctness needs. Items that depend on an owner or platform decision remain provisional until recorded in the decision ledger:
 
 1. Public contracts use service-owned schemas and IDs, never framework state objects.
 2. Workflow state stores artifact references and digests, not source archives, raw logs, secrets, or unbounded prompts.
@@ -1510,18 +1607,18 @@ The following are framework-independent and can be accepted as Epic constraints 
 9. Analyze and Plan checkpoints are human-reviewable by default. Unattended operation requires later policy approval.
 10. Evidence and generated artifacts are content-addressed, and execution is bound to the exact generated patch.
 11. Result states distinguish behavioral failure, setup failure, policy block, environment mismatch, non-reachability, and insufficient evidence.
-12. OpenTelemetry is the portability boundary for traces and metrics, with service-defined redaction.
+12. Telemetry uses a portable, service-defined boundary with redaction; OpenTelemetry is the leading implementation candidate.
 13. Golden-reference and held-out behavioral evaluation are release gates for model, prompt, adapter, and harness changes.
-14. Test promotion occurs through a human-reviewed test-only PR or explicitly approved equivalent.
+14. If generated tests are promoted into a repository, promotion occurs through a human-reviewed PR/MR or explicitly approved equivalent; promotion is outside the core MVP flow.
 15. The agent/model control plane and untrusted repository execution plane are separate deployable concerns.
 16. Execution-provider contracts remain independent of Jenkins, Tekton, GitHub Actions, or another customer pipeline implementation.
 17. Human wait states persist checkpoints and release compute rather than holding an execution worker.
-18. Model serving and agent runtime are accessed through service-owned interfaces; the available RHOAI path is evaluated first and does not define domain schemas.
-19. Differential runs emit one immutable record referencing both independent execution results, including blocked and inconclusive outcomes.
-20. A release gate verifies record signature, signer identity, referenced digests, and required gate outcomes before consuming the conclusion.
+18. Model serving and agent runtime are accessed through service-owned interfaces; the available demo endpoint and RHOAI path are evaluated without defining domain schemas.
+19. A differential run with both execution records emits one immutable comparison record, including inconclusive comparisons; earlier terminal failures emit `RunTerminalRecord`.
+20. A configured policy/evidence consumer verifies record signature, signer identity, referenced digests, and required gate outcomes before consuming the conclusion.
 21. Model tasks select logical aliases; administrator-owned endpoint profiles resolve aliases to approved endpoints and models.
-22. Source-control integration is an authenticated, provider-neutral adapter with immutable commit binding and explicit mutation approval.
-23. Platform/plugin integration and provider-specific SCM adapters are separate contracts; hosting inside Lightwell or the Red Hat console does not make a provider API part of the domain model.
+22. Immutable source subjects are resolved through an authenticated `SourceProvider`; broader SCM mutation is an expansion adapter with explicit approval.
+23. Future platform/plugin and provider-specific SCM adapters remain separate from domain contracts.
 
 ## Decisions the Spike Must Inform
 
@@ -1531,7 +1628,7 @@ Do not settle these through Epic wording alone:
 - Lightwell-native durability versus Temporal or another workflow platform.
 - Pydantic AI versus direct provider SDKs for typed model tasks.
 - Which `ai-test-harness` components can be reused, forked, or only reproduced.
-- The first supported framework adapter and repository set.
+- The exact SSC demo Java repository revision, Maven/JUnit profile, and representative vulnerable/fixed fixture.
 - Artifact/evidence storage implementation and Lightwell publication mechanism.
 - Sandbox provider and CI callback protocol.
 - Model/provider selection and fallback policy.
@@ -1539,20 +1636,36 @@ Do not settle these through Epic wording alone:
 - Quantitative cost, latency, acceptance, and false-positive gates.
 - The RHOAI agent-runtime capability and deployment pattern to use, if any, beyond model serving.
 - Which language adapters follow the Java MVP and in what order.
-- Vulnerability/remediation PR versus general PR as the first invocation scenario.
-- Updating an existing remediation PR versus opening a linked test-only PR.
 - Vulnerability Prioritization VEX format/version, product-identity conventions, and document retrieval contract.
 - VPE policy decision schema, OPA bundle/entrypoint contract, and which decisions require local reevaluation.
 - Attestation envelope/predicate, signing authority, workload identity, transparency or enterprise verification mechanism, and retention policy.
 - Endpoint-profile ownership, allowed non-RHOAI test providers, data-classification restrictions, and production fallback policy.
-- First SCM provider/enterprise deployment, app or OAuth identity model, webhook event set, and initial publication mode.
-- Platform/plugin ownership of webhook ingestion, repository connections, UI, and SCM mutation authorization.
+- Immutable base/candidate acquisition and whether the fixed candidate is an existing remediation branch, artifact, or separate fixture.
+- Configured artifact/evidence store, attestation signer, and policy/evidence-consumer verification API for the demo.
+- Tekton/service callback, timeout, cancellation, retry, cleanup, and retention ownership.
+
+Determine the minimum SCM behavior required by the existing SSC demo before estimating its adapter. Broader webhook, plugin, publication-mode, and mutation-identity decisions remain expansion work.
 
 ## Recommended Epic Decomposition
 
 ### Pre-Epic alignment gate
 
-Before estimating the language-adapter and publication work, record the sponsor/stakeholder answers for pilot repositories, initial trigger scenario, RHOAI runtime availability, and PR publication mode. Contract and golden-reference work can begin while these decisions are pending, but adapter-specific commitments should not.
+The MVP host, initial language, and execution compatibility slot are known: SSC demo, Java/Maven/JUnit, Tekton, and `agentic-test-generation`/`ai-generate-tests`. Before estimating conformant integration, record the exact pilot repository/revisions, active VPE/VEX delivery contract, base/candidate source, service deployment location, RHOAI availability, evidence-store/signing path, and any minimum SCM behavior the existing demo requires. Do not expand that seam into a general SCM workstream.
+
+Before Epic approval, reconcile `decision-ledger.md`: mark confirmed portions of implementation direction, MVP human review, baseline-only quantitative targets, combined supplied/discovered context, and mandatory golden references; split evidence ownership and other partially resolved entries so open sub-decisions remain visible.
+
+### Epic 0: SSC Demo Baseline and Compatibility Seam
+
+Deliver:
+
+- Reproducible installation inventory for the active Argo Applications, Tekton resources, namespace, service accounts, RBAC, storage, Secrets, ConfigMaps, Routes, and Java repository.
+- Baseline runs for `/generate-tests` and the active RHTPA/Conforma vulnerability path, with logs/artifacts preserved before PipelineRun/PVC pruning.
+- Baseline measurements for latency, model usage/cost, retries, collected/executed tests, human checkpoint/review time, and evidence completeness.
+- A version-pinned VPE/VEX request fixture added to the active test path; legacy inactive Nexus/OpenVEX data is documented as reference-only.
+- `TektonCompatibilityAdapter` stub at the current `ai-generate-tests` seam, preserving `TESTS_ADDED` and optional `PR_URL` without claiming differential validation.
+- GitOps source/branch, deployment overlay, rollback switch, and exact active pipeline inventory.
+
+Exit condition: the current demo path is reproducible, its artifacts and metrics are captured, and a stub service request/result can traverse the existing slot without changing surrounding demo components or being represented as a conformant MVP run.
 
 ### Epic 1: Domain Contracts and Run State
 
@@ -1561,57 +1674,63 @@ Deliver:
 - Versioned schemas for request, evidence references, objectives, plans, checkpoints, feedback, generation, execution, quality, and provenance.
 - `PreflightResult` and self-check/failure-register result contracts.
 - Normalized VEX input and format-specific input-adapter interface.
-- VPE policy decision, OPA bundle reference, evaluation result, obligation, and policy-composition contracts.
+- VPE evaluated-policy decision reference, typed obligation, and local policy-composition contracts.
 - Signed differential test record, materialized-test equivalence, attestation, verification, and supersession contracts.
 - State-transition rules and idempotency behavior.
 - Schema fixtures, compatibility tests, and invalid-input tests.
 - Framework-neutral `WorkflowController` and `ModelTaskRunner` interfaces.
 - Standard `/generate-tests` trigger/event payload and asynchronous status/callback contract.
-- Platform/plugin command, identity, tenancy, repository-connection, and UI-correlation contract.
-- Provider-neutral SCM event, target, generation-request, and publication contracts.
+- Authenticated VPE/platform command, identity, tenancy, and correlation contract.
+- `SourceProvider` contract for immutable source retrieval without SCM mutation requirements.
 - Explicit control-plane, execution-plane, and evidence-plane boundaries.
 - Versioned `ModelEndpointProfile`, logical model alias, capability, and fallback-policy contracts.
+- Tekton compatibility request/result, durable run reference, callback, continuation, and bounded artifact-reference contracts.
+- Per-stage/total deadlines, retry ownership, cancellation, cleanup, retention, and recovery semantics.
+- SSC platform-readiness probe for required Secrets, RBAC/service accounts, storage, network, endpoint, artifact/evidence, signing, and execution-provider resources.
+- Run-admission endpoint that authenticates the request, creates the durable run ID, and emits `RunAdmissionResult` or `RunTerminalRecord` before repository/model/execution work.
 
-Exit condition: a complete synthetic run can be represented and replayed without selecting an LLM or orchestration framework.
+Exit condition: a complete synthetic run can be represented and replayed without selecting an LLM or orchestration framework, and failed required admission produces no clone, Maven execution, model call, SCM mutation, or differential evidence record.
 
 ### Epic 2: VPE VEX Driver and Evidence Intake
 
 Deliver:
 
 - `VulnerabilityDriverPayload` validation.
-- SCM webhook/explicit-request normalization and provider delivery idempotency.
-- Platform/plugin integration with one provider-neutral SCM capability.
+- VPE/platform request normalization, actor/service authorization, immutable target resolution, and delivery idempotency.
 - Lightwell/Vulnerability Prioritization evidence-reference resolver stub or adapter.
 - Evidence consistency and missing-context findings.
-- VPE VEX ingestion with source document/statement preservation.
-- VPE evaluated-decision ingestion; signed OPA bundle evaluation only for an approved run-specific use case.
+- Active, version-pinned VPE VEX ingestion with original document digest, statement identity, issuer, product identity, format/version, and retrieval provenance.
+- Explicit treatment of RHTPA suppression/status output as supporting evidence rather than a substitute for source-preserved VEX.
+- VPE evaluated-decision ingestion; executable OPA bundle evaluation remains outside baseline MVP unless separately approved.
 - Driver-neutral `TestObjective` derivation.
 
-Exit condition: supplied evidence produces attributable objectives or explicit gaps without copying or rewriting upstream conclusions.
+Exit condition: a source-preserved VPE/VEX fixture produces attributable objectives or explicit gaps; stale, unmapped, inactive-reference-only, or identity-conflicting inputs fail without being converted into authoritative VEX.
 
 ### Epic 3: Analyze and Repository Profile
 
 Deliver:
 
 - Read-only repository discovery.
-- Immutable commit/ref resolution through the SCM adapter.
-- Approved command/profile model.
+- Immutable commit/artifact resolution through the `SourceProvider`.
+- SSC demo Java/Maven/JUnit repository profile, including module/subdirectory, Spring Boot versus other framework detection, Maven settings/mirror reference, and approved commands.
+- Approved command/profile model that does not infer authorization from repository files.
 - Adapter capability detection.
 - Feasibility assessment and invalidation rules.
+- Target-precondition gate for immutable subjects, Java profile, approved commands, artifact mirror, execution provider, and evidence/signing capability.
 - Analyze checkpoint and review packet.
 
-Exit condition: one pilot repository produces a reproducible profile and a policy-grounded feasibility result without a model inventing commands or environment facts.
+Exit condition: the pinned SSC demo repository produces a reproducible Maven/JUnit profile and policy-grounded base/candidate feasibility result without a model inventing commands, framework identity, mirror configuration, or environment facts.
 
 ### Epic 4: Plan and Human Review
 
 Deliver:
 
 - Typed model-task prototype for scenario proposals.
-- Deterministic evidence citation, oracle-source, duplicate-candidate, and safety gates.
+- Deterministic evidence citation, expected-behavior source, duplicate-candidate, and safety gates.
 - Versioned plan artifacts and feedback decisions.
-- Approve/revise/reject/resume behavior.
+- Approve/revise/reject/resume behavior with an event-driven continuation contract; no Tekton pod remains allocated while awaiting review.
 
-Exit condition: an approved plan digest is traceable to objectives and evidence, and unsupported behaviors become stated gaps.
+Exit condition: a real SSC workflow reaches a checkpoint, releases compute, accepts one authenticated decision, rejects duplicate/stale decisions, resumes after controller restart with the exact approved plan digest, and represents unsupported behavior as a stated gap.
 
 ### Epic 5: Native Test Generation
 
@@ -1623,19 +1742,23 @@ Deliver:
 - Per-subject materialized-test digest and deterministic equivalence input.
 - Parse, format, compile, collection, and assertion-quality prechecks.
 - Bounded repair with stop conditions.
+- Compatibility materialization of the exact patch into the Tekton workspace with `TESTS_ADDED`, allowed-path manifest, and expected patch digest.
+- `SscTektonCompatibilityResult` containing bounded `TESTS_ADDED`, `PR_URL`, `RUN_REF`, `EVIDENCE_REF`, and terminal status fields while canonical records remain external artifacts.
 
-Exit condition: generated tests conform to repository patterns and the exact accepted patch is content-addressed for execution.
+Exit condition: generated tests conform to the detected Java framework and repository patterns; at least one intended test is collected; and the exact accepted patch, allowed paths, plan/checkpoint digest, and materialized content are bound for execution.
 
 ### Epic 6: Isolated Execution and Result Normalization
 
 Deliver:
 
-- Execution provider contract and one adapter for the selected Java pilot pipeline, backed by an ephemeral worker.
+- Execution provider contract and Tekton adapter for two independent ephemeral Java/Maven workers.
 - Focused and related-suite execution.
-- Base/candidate differential mode where available.
+- Required base/candidate differential mode for the fix-pinning MVP.
 - Independent base/candidate execution manifests and environment-difference manifest.
-- JUnit, coverage, log, mutation, and stability artifact normalization.
+- Required JUnit, log, command, and environment artifact normalization; coverage, mutation, and stability are capability-advertised as `supported`, `not_supported`, or `not_requested`.
 - Typed infrastructure versus behavioral result classification.
+- Separate service/model and repository execution service accounts, Secrets, network policies, and image identities; optional SCM publication credentials remain isolated when enabled.
+- Artifact upload and callback completion before workspace/PVC/TaskRun cleanup.
 
 Exit condition: duplicate callbacks are safe, execution cannot access unapproved credentials or network destinations, and both result records bind to exact source, materialized-test, patch, command, environment, and image digests.
 
@@ -1646,42 +1769,64 @@ Deliver:
 - Golden-reference dataset and failure-register cases.
 - Deterministic gate engine and model-assisted review separation.
 - VEX status-to-planning and product-identity mapping gates, including preservation of `not_affected`, `fixed`, and `under_investigation` semantics.
-- OPA bundle signature/version/schema, unknown-obligation, indeterminate-result, and local-policy-deny-overrides gates.
+- VPE decision schema, unknown-obligation, expired/indeterminate-result, and local-policy-deny-overrides gates.
 - Differential comparison classifier and strict-claim gate for test/environment equivalence.
 - Held-out evaluation runner, cost/latency accounting, and regression comparison.
 - OpenTelemetry traces and redaction tests.
-- OpenAI-compatible endpoint conformance suite using fake/local, approved non-production, and RHOAI staging profiles.
+- OpenAI-compatible endpoint conformance suite using a deterministic fake and the current approved demo endpoint; broader provider/model comparison follows MVP.
 - Evaluation report suitable for selecting the implementation harness.
+- SSC demo failure cases for zero collected tests, wrong framework prompt/profile, empty/assertion-free/skipped tests, weakened repairs, duplicate tests, irrelevant target coverage, base-and-candidate both passing, and unexpected environment differences.
+- Baseline comparison against the current `ai-generate-tests` path using latency, cost, retry, collection, acceptance, review, and evidence metrics.
 
 Exit condition: model, prompt, adapter, or harness changes cannot be promoted without comparable behavioral and evidence results.
 
-### Epic 8: Evidence Publication and PR Integration
+### Epic 8: Evidence Publication and Conditional SSC Compatibility
 
 Deliver:
 
-- Evidence manifest and provenance publication.
+- Evidence manifest, generated-test artifact, provenance, and configured evidence-store publication.
 - Review summary constrained for human readability.
-- Policy-selected existing-PR update or linked test-only PR publisher with exact-patch verification.
-- SCM webhook endpoint, check/status publication, and approved branch/PR/MR mutation adapter.
-- Signed evidence/attestation output and release-gate verification result.
-- Assembly, signing, verification, publication, and PR attachment of `SignedDifferentialTestRecord`.
+- Conditional `PublicationIntent` and SSC adapter integration only if required by the existing GitLab PR/MR flow; service-owned branch/PR mutation is not an MVP requirement.
+- Conditional check/status publication and provider-neutral publication-result normalization.
+- Signed evidence/attestation output and configured-verifier result.
+- Assembly, signing, verification, and publication of `SignedDifferentialTestRecord`; optional PR/MR attachment is secondary.
 - Signed test evidence linked to the source VEX document and statement for return to Vulnerability Prioritization/Lightwell.
-- Exact VPE policy decision or bundle/entrypoint/input/result provenance included in the signed evidence manifest.
+- Exact VPE policy-decision provenance included in the signed evidence manifest; optional bundle provenance applies only if that extension is selected.
 - Approval, rejection, supersession, and retention events.
+- Configured artifact/evidence store, attestation signer/workload identity, retention policy, and policy/evidence-consumer verification API. A spike-owned verifier is acceptable until the final SSC consumer is selected.
+- When SCM publication is enabled, fail closed unless branch/MR content matches the approved, executed, and signed patch digest.
+- Evidence persistence test proving signed record, patch, base/candidate reports, and verification material remain resolvable after PipelineRun and PVC pruning.
 
-Exit condition: a reviewer and release gate can verify one signed record that traces every proposed test to its objective, exact content on both subjects, both execution results, comparison, environment differences, limitations, and model/tool identities.
+Exit condition: a reviewer and configured verifier can validate one signed record and generated-test artifact that trace the test to its objective, exact content on both subjects, both execution results, comparison, environment differences, limitations, and model/tool identities. Any SCM behavior is limited to what the existing demo requires.
+
+### Epic 9: SSC Demo MVP Composition
+
+Deliver:
+
+- GitOps-deployed service, compatibility adapter, continuation path, execution workers, and evidence integration in the active SSC demo source branch.
+- VPE/VEX-initiated Java run using immutable base/candidate subjects and an approved Analyze/Plan checkpoint.
+- Existing demo-compatible status/results backed by canonical durable evidence references; GitLab review publication is optional.
+- Rollback to the legacy smoke task without losing the baseline configuration.
+- Updated runbook, topology, secret/RBAC/network requirements, failure recovery, and operator demonstration steps.
+- End-to-end metrics comparing the conformant service path with the captured baseline.
+- Required positive Java differential fixture: intended test collects on both subjects, base exhibits expected vulnerable/old behavior, candidate exhibits expected fixed behavior, materialized test equivalence is recorded, and the emitted test artifact matches the exact verified patch.
+- Negative matrices for both pass, both fail, environment mismatch, patch drift, and one missing-side execution.
+
+Exit condition: the VPE-initiated SSC demo flow executes the provisional ADR MVP Definition of Done without relying on inactive VEX data, retaining a worker during human review, exposing model credentials to repository execution, or treating one-tree Maven success as differential fix evidence. Any SCM interaction is demonstrably limited to the existing flow's required compatibility seam.
 
 ### Epic dependencies
 
 ```text
-Epic 1: contracts and run state
-  -> stage-zero preflight self-verification
-  -> Epic 2: vulnerability evidence intake
-  -> Epic 3: repository analysis
-       -> Epic 4: plan and review
-            -> Epic 5: native generation
-                 -> Epic 6: isolated execution
-                      -> Epic 8: evidence and PR publication
+Epic 0: SSC demo baseline and compatibility seam
+  -> Epic 1: contracts and run state
+       -> platform readiness and run admission
+       -> Epic 2: vulnerability evidence intake
+            -> Epic 3: repository analysis and target preconditions
+                 -> Epic 4: plan and review
+                      -> Epic 5: native generation
+                           -> Epic 6: isolated execution
+                                -> Epic 8: evidence publication and conditional SSC compatibility
+                                     -> Epic 9: SSC demo MVP composition
 
 Epic 7: evaluation and release gates
   starts with Epic 1 fixtures and expands alongside Epics 2-6
@@ -1702,6 +1847,11 @@ Every Epic should include:
 - Audit events without secret or sensitive-source leakage.
 - Failure-register entries for discovered harness defects.
 - Measured latency, model usage, runner time, and artifact volume.
+- Prompt-injection tests proving repository/issue text cannot change endpoint, approved commands, policy, credentials, publication target, or authorization.
+- Path/symlink and patch-scope tests rejecting production-code, manifest, and out-of-root edits.
+- Secret-isolation and redaction tests proving model credentials never enter repository execution pods, workspaces, logs, or Tekton results; optional SCM mutation credentials remain separately isolated when enabled.
+- Idempotent replay tests for trigger, decision, execution callback, and publication requests.
+- Artifact-retention tests after PipelineRun/PVC pruning and controller/worker restart.
 
 Avoid acceptance criteria such as "the agent successfully analyzes the repository" or "the test is high quality." Require observable artifacts and gates: schema-valid profile, cited objective, approved plan digest, collecting test, base/candidate result, exact patch digest, or explicit stated gap.
 
@@ -1710,32 +1860,36 @@ Avoid acceptance criteria such as "the agent successfully analyzes the repositor
 The spike should implement one thin vertical slice rather than isolated framework demos:
 
 ```text
-Vulnerability request fixture
-  -> remediation PR fixture with base/candidate revisions
-  -> /generate-tests event
+Active, version-pinned VPE/VEX fixture
+  -> immutable SSC Java base/candidate subjects
+  -> normalized /generate-tests or PipelineRun request
+  -> stage-zero admission before clone/build
   -> repository profile
   -> one evidence-backed test objective
   -> one approved test plan
+  -> event-driven continuation with no waiting worker
   -> one native Java test
-  -> isolated focused execution through a pipeline adapter
+  -> isolated base/candidate execution through the SSC Tekton adapter
   -> base/candidate differential result
-  -> signed normalized evidence packet attached to the PR
+  -> verified signed evidence and generated-test artifact in the configured SSC evidence path
 ```
 
-Run the same slice through the shortlisted harness combinations. Compare correctness and operational behavior, not developer preference:
+First record the legacy smoke path, then run the conformant slice through the service-owned interfaces. Compare correctness and operational behavior, not framework preference:
 
 - Recovery and resume after forced failure.
 - Human revision at Analyze and Plan.
 - Duplicate request and callback handling.
 - Structured-output failure and bounded repair.
-- Provider/model substitution.
+- Deterministic fake and current approved demo endpoint conformance.
 - Tool authorization enforcement.
 - Trace and artifact completeness with redaction.
 - Golden-reference behavioral result.
 - Implementation complexity, dependency footprint, latency, and cost.
-- Deployment and model access through the available RHOAI runtime or a documented local equivalent.
+- Deployment and model access through the current approved demo endpoint; record RHOAI-specific findings when available.
 - No compute allocation retained while the run waits at a human checkpoint.
 - Signed differential-record verification plus negative tests for altered patches, swapped subjects, missing artifacts, and invalid signatures.
+- Credential/process separation between model/controller and repository execution; optional SCM publication remains separately isolated when enabled.
+- Artifact resolution after PipelineRun/PVC pruning and GitOps rollback to the legacy smoke task.
 
 The spike result should recommend a stack per layer, identify components to reuse from existing work, and record which findings would trigger reconsideration. It should not redefine the service contracts to match the winning framework.
 
