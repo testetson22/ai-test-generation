@@ -145,9 +145,12 @@ direction, not a claim that production modules or deployments already exist.
 
 The Python reference already implements admission/readiness, Analyze, Plan,
 generation, review/state projections, local persistence, and artifact-integrity
-checks. It does not implement a general task scheduler, provider-backed execution
-service, or the complete controller recovery protocol. Existing execution and
-differential schemas are not implementations of those capabilities.
+checks. The new Go control module now contains PostgreSQL schema/migration,
+pair/task/attempt persistence, fenced claims, provider reconciliation,
+controller-authorized retry scheduling, and cancellation operations. These are
+not yet wired into the runnable HTTP composition; artifact durability, real
+worker/provider integration, and evidence collection remain unimplemented.
+PostgreSQL integration tests are configured but require a running test database.
 
 Initial FLPATH-5048 runtime/storage choices are recorded in
 [`flpath-5048-runtime.md`](flpath-5048-runtime.md): Go control service, PostgreSQL

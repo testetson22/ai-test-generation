@@ -4,15 +4,17 @@
   "title": "ATG immutable approved execution task specification",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract", "version", "task_spec_id", "run_id", "pair_id", "generation_id", "subject_role", "subject", "generation", "code_approval", "profile", "profile_approval", "expected_test_ids", "retry_policy", "created_at"],
+  "required": ["contract", "version", "task_spec_id", "run_id", "expected_run_revision", "pair_id", "generation_id", "subject_role", "comparison_mode", "subject", "generation", "code_approval", "profile", "profile_approval", "expected_test_ids", "retry_policy", "created_at"],
   "properties": {
     "contract": { "const": "atg.execution_task_spec" },
     "version": { "$ref": "common.schema.json#/$defs/contract_version" },
     "task_spec_id": { "$ref": "common.schema.json#/$defs/id" },
     "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "expected_run_revision": { "type": "integer", "minimum": 1 },
     "pair_id": { "$ref": "common.schema.json#/$defs/id" },
     "generation_id": { "$ref": "common.schema.json#/$defs/id" },
     "subject_role": { "enum": ["base", "candidate"] },
+    "comparison_mode": { "enum": ["same_subject_control", "differential"] },
     "subject": {
       "type": "object",
       "additionalProperties": false,
@@ -77,12 +79,12 @@
         "policy_id": { "$ref": "common.schema.json#/$defs/id" },
         "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 },
         "deadline_at": { "$ref": "common.schema.json#/$defs/timestamp" },
-        "initial_backoff_seconds": { "type": "integer", "minimum": 0 },
-        "max_backoff_seconds": { "type": "integer", "minimum": 0 },
+        "initial_backoff_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
+        "max_backoff_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 },
         "retryable_failures": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "enum": ["submission_uncertain", "provider_unavailable", "worker_lost", "worker_resource_exhausted", "artifact_transport_failed"] }
+          "items": { "enum": ["provider_unavailable", "worker_lost", "worker_resource_exhausted", "artifact_transport_failed"] }
         }
       }
     },

@@ -20,7 +20,7 @@
       "properties": {
         "decision_id": { "$ref": "common.schema.json#/$defs/id" },
         "policy_id": { "$ref": "common.schema.json#/$defs/id" },
-        "failure_category": { "enum": ["submission_uncertain", "provider_unavailable", "worker_lost", "worker_resource_exhausted", "artifact_transport_failed"] },
+        "failure_category": { "enum": ["provider_unavailable", "worker_lost", "worker_resource_exhausted", "artifact_transport_failed"] },
         "authorized_at": { "$ref": "common.schema.json#/$defs/timestamp" }
       }
     },

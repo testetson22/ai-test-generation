@@ -20,6 +20,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_USER: atg
+          POSTGRES_PASSWORD: atg-test-password
+          POSTGRES_DB: atg
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U atg -d atg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      ATG_TEST_DATABASE_URL: postgres://atg:atg-test-password@localhost:5432/atg?sslmode=disable
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0

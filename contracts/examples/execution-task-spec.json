@@ -3,9 +3,11 @@
   "version": "1.0",
   "task_spec_id": "fixture-task-spec-base",
   "run_id": "fixture-run-1",
+  "expected_run_revision": 12,
   "pair_id": "fixture-pair-1",
   "generation_id": "fixture-generation-1",
   "subject_role": "base",
+  "comparison_mode": "same_subject_control",
   "subject": {
     "source": {
       "identity": { "kind": "git-commit", "id": "fixture-commit-base", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
@@ -27,7 +29,7 @@
       "authorization_ref": "fixture-review-authorization",
       "authenticated_at": "2026-11-17T19:00:00Z"
     },
-    "reviewed_generation_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    "reviewed_generation_digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
   },
   "profile": {
     "profile_id": "fixture-spring-profile",
