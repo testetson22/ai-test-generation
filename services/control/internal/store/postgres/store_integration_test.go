@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/artifact"
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/evidence"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/execution"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/provider"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testkit"
@@ -243,6 +245,246 @@ func TestPostgresAdmissionRevocationBlocksBeforeProviderSubmission(t *testing.T)
 	}
 }
 
+func TestPostgresEvidenceDeliveryIsProvisionalUntilCleanupIsConfirmed(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	input := pairInput(t, now, "same_subject_control", []string{"worker_lost"})
+	pair, _, err := store.CreatePair(ctx, input)
+	if err != nil {
+		t.Fatalf("create execution pair: %v", err)
+	}
+	cleanupPair(t, store, pair.PairID)
+	if _, err := store.RequestCancel(ctx, pair.CandidateTaskID, 1, now); err != nil {
+		t.Fatalf("defer unused candidate task: %v", err)
+	}
+	clock := testkit.NewManualClock(now)
+	worker := testkit.NewStatefulProvider(clock)
+	providerID := provider.Identity{Kind: "test-provider", ID: "result-test", Version: "1"}
+	controller, err := execution.NewController(store, worker, providerID, clock,
+		execution.AdmissionFunc(func(context.Context, execution.TaskSpec, provider.Identity) error { return nil }),
+		execution.ControllerConfig{ClaimLease: 10 * time.Second, PollInterval: 5 * time.Second},
+	)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	worked, err := controller.ProcessNext(ctx, "result-controller")
+	if err != nil || !worked || worker.LaunchCount() != 1 {
+		t.Fatalf("submit worked=%t err=%v launches=%d", worked, err, worker.LaunchCount())
+	}
+	task, err := store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "submitted" {
+		t.Fatalf("submitted task = %#v, err %v", task, err)
+	}
+	var submissionToken, providerJobID string
+	if err := store.db.QueryRowContext(ctx, `SELECT submission_token, provider_job_id FROM execution_attempts WHERE attempt_id = $1`, task.ActiveAttemptID).Scan(&submissionToken, &providerJobID); err != nil {
+		t.Fatalf("load active provider identities: %v", err)
+	}
+	if _, err := worker.SetStatus(submissionToken, provider.StatusCompleted, ""); err != nil {
+		t.Fatalf("complete provider job: %v", err)
+	}
+	if err := clock.Advance(6 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	worked, err = controller.ProcessNext(ctx, "result-controller")
+	if err != nil || !worked {
+		t.Fatalf("observe provider completion worked=%t err=%v", worked, err)
+	}
+	task, err = store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "collecting" {
+		t.Fatalf("collecting task = %#v, err %v", task, err)
+	}
+	spec, err := execution.DecodeTaskSpec(task.Specification)
+	if err != nil {
+		t.Fatalf("decode task specification: %v", err)
+	}
+	logBytes := []byte("test report and worker log")
+	logRef := execution.Artifact{ArtifactID: testID(t, "worker-log"), MediaType: "text/plain", Digest: artifact.Digest(logBytes), SizeBytes: int64(len(logBytes))}
+	finished := clock.Now().UTC()
+	finishedText := finished.Format(time.RFC3339Nano)
+	result := execution.ExecutionResult{
+		Contract: "atg.execution_result", Version: "1.0", ResultID: testID(t, "result"),
+		TaskID: task.TaskID, RunID: task.RunID, PairID: task.PairID, AttemptID: task.ActiveAttemptID,
+		AttemptNumber: task.AttemptCount, ExpectedTaskRevision: task.Revision, TaskSpecDigest: task.SpecificationDigest,
+		SubjectRole: task.SubjectRole, Source: spec.Subject.Source.Identity, Subject: spec.Subject.Identity,
+		Profile:     execution.ResultProfile{ProfileID: spec.Profile.ProfileID, ProfileVersion: spec.Profile.ProfileVersion, Digest: spec.Profile.Artifact.Digest},
+		Provider:    execution.Identity{Kind: providerID.Kind, ID: providerID.ID, Version: providerID.Version},
+		ProviderJob: execution.Identity{Kind: "provider-job", ID: providerJobID},
+		Worker:      execution.Identity{Kind: "worker", ID: "worker-result-test", Digest: "sha256:" + strings.Repeat("8", 64)},
+		Environment: execution.Identity{Kind: "execution-environment", ID: "env-result-test", Digest: "sha256:" + strings.Repeat("9", 64)},
+		Status:      execution.ResultProvisional, ObservedOutcome: execution.ResultCompleted,
+		Phases: []execution.ExecutionPhase{{
+			Phase: "test", CommandID: "run-tests", Status: "succeeded", ExitCode: intPointer(0),
+			StartedAt: now.Format(time.RFC3339Nano), FinishedAt: finishedText, Artifacts: []execution.Artifact{logRef},
+		}},
+		Tests: execution.TestExecutionEvidence{
+			ExpectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), DiscoveredTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
+			SelectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), ExecutedTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
+			SkippedTestIDs: []string{},
+		},
+		Artifacts: []execution.Artifact{logRef}, Cleanup: execution.CleanupEvidence{Status: "pending"},
+		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: finishedText,
+	}
+	artifactStore, err := artifact.NewFileStore(t.TempDir(), 1_000_000)
+	if err != nil {
+		t.Fatalf("create artifact store: %v", err)
+	}
+	defer artifactStore.Close()
+	publisher, err := evidence.NewPublisher(artifactStore, store, 100_000)
+	if err != nil {
+		t.Fatalf("create evidence publisher: %v", err)
+	}
+	published, err := publisher.PublishProvisional(ctx, result, []evidence.Content{{Artifact: logRef, Bytes: logBytes}})
+	if err != nil {
+		t.Fatalf("persist provisional evidence: %v", err)
+	}
+	task, err = store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "collecting" || task.Revision != result.ExpectedTaskRevision+1 || task.ExecutionResult == nil || *task.ExecutionResult != published.Reference {
+		t.Fatalf("provisionally delivered task = %#v, err %v", task, err)
+	}
+	if err := clock.Advance(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	finalRef, err := publisher.Finalize(ctx, published, "succeeded", true, clock.Now())
+	if err != nil {
+		t.Fatalf("finalize execution result: %v", err)
+	}
+	task, err = store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "completed" || task.Revision != result.ExpectedTaskRevision+2 || task.ExecutionResult == nil || *task.ExecutionResult != finalRef {
+		t.Fatalf("finalized task = %#v, err %v", task, err)
+	}
+	var events []string
+	rows, err := store.db.QueryContext(ctx, `SELECT event_type FROM execution_task_events WHERE task_id = $1 ORDER BY revision`, task.TaskID)
+	if err != nil {
+		t.Fatalf("read result delivery events: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var event string
+		if err := rows.Scan(&event); err != nil {
+			t.Fatalf("read result delivery event: %v", err)
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate result delivery events: %v", err)
+	}
+	if len(events) < 3 || events[len(events)-2] != "result_provisional" || events[len(events)-1] != "execution_result_finalized" {
+		t.Fatalf("result delivery event order = %v", events)
+	}
+}
+
+func TestPostgresFailedAttemptRetainsItsEvidenceThroughCleanup(t *testing.T) {
+	store := integrationStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	input := pairInput(t, now, "same_subject_control", nil)
+	pair, _, err := store.CreatePair(ctx, input)
+	if err != nil {
+		t.Fatalf("create execution pair: %v", err)
+	}
+	cleanupPair(t, store, pair.PairID)
+	if _, err := store.RequestCancel(ctx, pair.CandidateTaskID, 1, now); err != nil {
+		t.Fatalf("defer unused candidate task: %v", err)
+	}
+	clock := testkit.NewManualClock(now)
+	worker := testkit.NewStatefulProvider(clock)
+	providerID := provider.Identity{Kind: "test-provider", ID: "failed-result-test", Version: "1"}
+	controller, err := execution.NewController(store, worker, providerID, clock,
+		execution.AdmissionFunc(func(context.Context, execution.TaskSpec, provider.Identity) error { return nil }),
+		execution.ControllerConfig{ClaimLease: 10 * time.Second, PollInterval: 5 * time.Second},
+	)
+	if err != nil {
+		t.Fatalf("create controller: %v", err)
+	}
+	worked, err := controller.ProcessNext(ctx, "failed-result-controller")
+	if err != nil || !worked {
+		t.Fatalf("submit failed-result task worked=%t err=%v", worked, err)
+	}
+	task, err := store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "submitted" {
+		t.Fatalf("submitted task = %#v, err %v", task, err)
+	}
+	var submissionToken, providerJobID string
+	if err := store.db.QueryRowContext(ctx, `SELECT submission_token, provider_job_id FROM execution_attempts WHERE attempt_id = $1`, task.ActiveAttemptID).Scan(&submissionToken, &providerJobID); err != nil {
+		t.Fatalf("load active provider identities: %v", err)
+	}
+	if _, err := worker.SetStatus(submissionToken, provider.StatusFailed, "worker_lost"); err != nil {
+		t.Fatalf("fail provider job: %v", err)
+	}
+	if err := clock.Advance(6 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	worked, err = controller.ProcessNext(ctx, "failed-result-controller")
+	if err != nil || !worked {
+		t.Fatalf("observe provider failure worked=%t err=%v", worked, err)
+	}
+	task, err = store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "failed" {
+		t.Fatalf("failed task = %#v, err %v", task, err)
+	}
+	spec, err := execution.DecodeTaskSpec(task.Specification)
+	if err != nil {
+		t.Fatalf("decode task specification: %v", err)
+	}
+	logBytes := []byte("worker lost during test execution")
+	logRef := execution.Artifact{ArtifactID: testID(t, "failed-worker-log"), MediaType: "text/plain", Digest: artifact.Digest(logBytes), SizeBytes: int64(len(logBytes))}
+	finished := clock.Now().UTC()
+	finishedText := finished.Format(time.RFC3339Nano)
+	result := execution.ExecutionResult{
+		Contract: "atg.execution_result", Version: "1.0", ResultID: testID(t, "failed-result"),
+		TaskID: task.TaskID, RunID: task.RunID, PairID: task.PairID, AttemptID: task.ActiveAttemptID,
+		AttemptNumber: task.AttemptCount, ExpectedTaskRevision: task.Revision, TaskSpecDigest: task.SpecificationDigest,
+		SubjectRole: task.SubjectRole, Source: spec.Subject.Source.Identity, Subject: spec.Subject.Identity,
+		Profile:     execution.ResultProfile{ProfileID: spec.Profile.ProfileID, ProfileVersion: spec.Profile.ProfileVersion, Digest: spec.Profile.Artifact.Digest},
+		Provider:    execution.Identity{Kind: providerID.Kind, ID: providerID.ID, Version: providerID.Version},
+		ProviderJob: execution.Identity{Kind: "provider-job", ID: providerJobID},
+		Worker:      execution.Identity{Kind: "worker", ID: "worker-lost", Digest: "sha256:" + strings.Repeat("8", 64)},
+		Environment: execution.Identity{Kind: "execution-environment", ID: "env-failed-result", Digest: "sha256:" + strings.Repeat("9", 64)},
+		Status:      execution.ResultProvisional, ObservedOutcome: execution.ResultFailed, FailureCategory: "worker_lost",
+		Phases: []execution.ExecutionPhase{{
+			Phase: "test", CommandID: "run-tests", Status: "failed", FailureCategory: "worker_lost",
+			StartedAt: now.Format(time.RFC3339Nano), FinishedAt: finishedText, Artifacts: []execution.Artifact{logRef},
+		}},
+		Tests: execution.TestExecutionEvidence{
+			ExpectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), DiscoveredTestIDs: []string{},
+			SelectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), ExecutedTestIDs: []string{},
+			SkippedTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
+		},
+		Artifacts: []execution.Artifact{logRef}, Cleanup: execution.CleanupEvidence{Status: "pending"},
+		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: finishedText,
+	}
+	artifactStore, err := artifact.NewFileStore(t.TempDir(), 1_000_000)
+	if err != nil {
+		t.Fatalf("create artifact store: %v", err)
+	}
+	defer artifactStore.Close()
+	publisher, err := evidence.NewPublisher(artifactStore, store, 100_000)
+	if err != nil {
+		t.Fatalf("create evidence publisher: %v", err)
+	}
+	published, err := publisher.PublishProvisional(ctx, result, []evidence.Content{{Artifact: logRef, Bytes: logBytes}})
+	if err != nil {
+		t.Fatalf("persist failed attempt evidence: %v", err)
+	}
+	if err := clock.Advance(time.Second); err != nil {
+		t.Fatal(err)
+	}
+	finalizedAt := clock.Now()
+	finalRef, err := publisher.Finalize(ctx, published, "unknown", false, finalizedAt)
+	if err != nil {
+		t.Fatalf("finalize failed attempt evidence: %v", err)
+	}
+	retriedRef, err := publisher.Finalize(ctx, published, "unknown", false, finalizedAt)
+	if err != nil || retriedRef != finalRef {
+		t.Fatalf("idempotent failed-result delivery = %#v, %v; want %#v, nil", retriedRef, err, finalRef)
+	}
+	task, err = store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || task.Status != "failed" || task.ExecutionResult == nil || *task.ExecutionResult != finalRef {
+		t.Fatalf("failed task did not retain finalized evidence: %#v, err %v", task, err)
+	}
+}
+
 func TestPostgresConcurrentClaimsDoNotCreateDuplicateAttempts(t *testing.T) {
 	store := integrationStore(t)
 	ctx := context.Background()
@@ -442,7 +684,7 @@ func pairInput(t *testing.T, now time.Time, comparisonMode string, retryFailures
 		Generation: execution.GenerationRefs{
 			Manifest: execution.Artifact{ArtifactID: testID(t, "manifest"), MediaType: "application/vnd.atg.generation+json", Digest: "sha256:" + strings.Repeat("3", 64)},
 			Patch:    execution.Artifact{ArtifactID: testID(t, "patch"), MediaType: "text/x-diff", Digest: "sha256:" + strings.Repeat("4", 64)},
-			Tests:    execution.Artifact{ArtifactID: testID(t, "tests"), MediaType: "application/java-archive", Digest: "sha256:" + strings.Repeat("5", 64)},
+			Tests:    execution.Artifact{ArtifactID: testID(t, "tests"), MediaType: "application/vnd.atg.materialized-tests+json", Digest: "sha256:" + strings.Repeat("5", 64)},
 		},
 		CodeApproval: execution.CodeApproval{
 			CheckpointID: testID(t, "checkpoint"), DecisionID: testID(t, "decision"), Reviewer: reviewer,
@@ -513,3 +755,5 @@ func testID(t *testing.T, prefix string) string {
 	}
 	return prefix + "-" + hex.EncodeToString(value[:])
 }
+
+func intPointer(value int) *int { return &value }

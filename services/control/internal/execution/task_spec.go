@@ -38,6 +38,8 @@ type Artifact struct {
 	SizeBytes  int64  `json:"size_bytes,omitempty"`
 }
 
+func (a Artifact) Validate() error { return validateArtifact(a) }
+
 type Source struct {
 	Identity      Identity `json:"identity"`
 	Locator       string   `json:"locator"`
@@ -173,6 +175,12 @@ func (s TaskSpec) Validate() error {
 		if err := validateArtifact(artifact); err != nil {
 			return fmt.Errorf("%w: %s artifact: %v", ErrInvalidTaskSpec, name, err)
 		}
+	}
+	if s.Generation.Manifest.MediaType != "application/vnd.atg.generation+json" ||
+		s.Generation.Patch.MediaType != "text/x-diff" ||
+		s.Generation.Tests.MediaType != "application/vnd.atg.materialized-tests+json" ||
+		s.Profile.Artifact.MediaType != "application/vnd.atg.execution-profile+json" {
+		return fmt.Errorf("%w: generation and profile artifacts have unsupported media types", ErrInvalidTaskSpec)
 	}
 	if !validID(s.CodeApproval.CheckpointID) || !validID(s.CodeApproval.DecisionID) || !validReviewer(s.CodeApproval.Reviewer) || !validDigest(s.CodeApproval.ReviewedGenerationDigest) {
 		return fmt.Errorf("%w: code approval is incomplete", ErrInvalidTaskSpec)

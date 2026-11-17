@@ -20,6 +20,8 @@ var (
 	ErrRetryNotAuthorized  = errors.New("retry is not authorized by current task policy")
 	ErrDeadlineExceeded    = errors.New("task deadline has elapsed")
 	ErrTaskNotFound        = errors.New("execution task not found")
+	ErrResultConflict      = errors.New("execution result conflicts with persisted delivery")
+	ErrResultNotReady      = errors.New("execution attempt is not ready to accept a result")
 )
 
 type PairInput struct {
@@ -64,6 +66,7 @@ type TaskRecord struct {
 	ActiveAttemptID     string
 	NextActionAt        time.Time
 	TerminalReason      string
+	ExecutionResult     *Artifact
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }

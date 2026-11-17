@@ -18,7 +18,7 @@
   "generation": {
     "manifest": { "artifact_id": "fixture-generation-manifest", "media_type": "application/vnd.atg.generation+json", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" },
     "patch": { "artifact_id": "fixture-patch", "media_type": "text/x-diff", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444" },
-    "tests": { "artifact_id": "fixture-generated-tests", "media_type": "application/java-archive", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555" }
+    "tests": { "artifact_id": "fixture-generated-tests", "media_type": "application/vnd.atg.materialized-tests+json", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555" }
   },
   "code_approval": {
     "checkpoint_id": "fixture-code-checkpoint",

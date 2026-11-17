@@ -125,7 +125,7 @@ func (s *Store) GetTask(ctx context.Context, taskID string) (execution.TaskRecor
 const taskSelect = `
 	SELECT task_id, run_id, pair_id, subject_role, specification_bytes, specification_digest,
 	       status, revision, attempt_count, COALESCE(active_attempt_id, ''), next_action_at,
-	       COALESCE(terminal_reason, ''), created_at, updated_at
+	       COALESCE(terminal_reason, ''), COALESCE(execution_result_bytes, ''::bytea), created_at, updated_at
 	FROM execution_tasks`
 
 type rowScanner interface {
@@ -140,13 +140,24 @@ func scanPair(row rowScanner) (execution.PairRecord, error) {
 
 func scanTask(row rowScanner) (execution.TaskRecord, error) {
 	var task execution.TaskRecord
+	var resultBytes []byte
 	err := row.Scan(
 		&task.TaskID, &task.RunID, &task.PairID, &task.SubjectRole, &task.Specification,
 		&task.SpecificationDigest, &task.Status, &task.Revision, &task.AttemptCount,
-		&task.ActiveAttemptID, &task.NextActionAt, &task.TerminalReason, &task.CreatedAt, &task.UpdatedAt,
+		&task.ActiveAttemptID, &task.NextActionAt, &task.TerminalReason, &resultBytes, &task.CreatedAt, &task.UpdatedAt,
 	)
 	if err == nil && execution.DigestTaskSpec(task.Specification) != task.SpecificationDigest {
 		return execution.TaskRecord{}, execution.ErrStoredTaskCorrupt
+	}
+	if err == nil && len(resultBytes) > 0 {
+		var result execution.Artifact
+		if err := json.Unmarshal(resultBytes, &result); err != nil {
+			return execution.TaskRecord{}, execution.ErrStoredTaskCorrupt
+		}
+		if err := result.Validate(); err != nil {
+			return execution.TaskRecord{}, execution.ErrStoredTaskCorrupt
+		}
+		task.ExecutionResult = &result
 	}
 	return task, err
 }

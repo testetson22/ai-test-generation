@@ -36,7 +36,12 @@
       "properties": {
         "manifest": { "$ref": "common.schema.json#/$defs/artifact" },
         "patch": { "$ref": "common.schema.json#/$defs/artifact" },
-        "tests": { "$ref": "common.schema.json#/$defs/artifact" }
+        "tests": {
+          "allOf": [
+            { "$ref": "common.schema.json#/$defs/artifact" },
+            { "properties": { "media_type": { "const": "application/vnd.atg.materialized-tests+json" } } }
+          ]
+        }
       }
     },
     "code_approval": {

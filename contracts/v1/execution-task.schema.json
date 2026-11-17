@@ -18,10 +18,21 @@
     "revision": { "type": "integer", "minimum": 1 },
     "attempt_ids": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/id" }, "uniqueItems": true },
     "active_attempt_id": { "$ref": "common.schema.json#/$defs/id" },
-    "execution_result": { "$ref": "common.schema.json#/$defs/artifact" },
+    "execution_result": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/artifact" },
+        { "properties": { "media_type": { "const": "application/vnd.atg.execution-result+json" } } }
+      ]
+    },
     "terminal_reason": { "type": "string", "minLength": 1 },
     "cancel_requested_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
     "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
-  }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+      "then": { "required": ["execution_result"] }
+    }
+  ]
 }

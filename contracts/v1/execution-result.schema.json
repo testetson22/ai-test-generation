@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-result.schema.json",
+  "title": "ATG attributable execution result and evidence manifest",
+  "description": "Operational evidence only. A completed result does not assert that tests passed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "result_id", "task_id", "run_id", "pair_id", "attempt_id", "attempt_number", "expected_task_revision", "task_spec_digest", "subject_role", "source", "subject", "profile", "provider", "provider_job", "worker", "environment", "status", "observed_outcome", "phases", "tests", "artifacts", "cleanup", "started_at", "updated_at"],
+  "properties": {
+    "contract": { "const": "atg.execution_result" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "result_id": { "$ref": "common.schema.json#/$defs/id" },
+    "task_id": { "$ref": "common.schema.json#/$defs/id" },
+    "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "pair_id": { "$ref": "common.schema.json#/$defs/id" },
+    "attempt_id": { "$ref": "common.schema.json#/$defs/id" },
+    "attempt_number": { "type": "integer", "minimum": 1, "maximum": 10 },
+    "expected_task_revision": { "type": "integer", "minimum": 1 },
+    "task_spec_digest": { "$ref": "common.schema.json#/$defs/payload_digest" },
+    "subject_role": { "enum": ["base", "candidate"] },
+    "source": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/identity" },
+        { "required": ["digest"], "properties": { "digest": { "$ref": "common.schema.json#/$defs/payload_digest" } } }
+      ]
+    },
+    "subject": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/identity" },
+        { "required": ["digest"], "properties": { "digest": { "$ref": "common.schema.json#/$defs/payload_digest" } } }
+      ]
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile_id", "profile_version", "digest"],
+      "properties": {
+        "profile_id": { "$ref": "common.schema.json#/$defs/id" },
+        "profile_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "digest": { "$ref": "common.schema.json#/$defs/payload_digest" }
+      }
+    },
+    "provider": { "$ref": "common.schema.json#/$defs/identity" },
+    "provider_job": { "$ref": "common.schema.json#/$defs/identity" },
+    "worker": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/identity" },
+        { "required": ["digest"], "properties": { "digest": { "$ref": "common.schema.json#/$defs/payload_digest" } } }
+      ]
+    },
+    "environment": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/identity" },
+        { "required": ["digest"], "properties": { "digest": { "$ref": "common.schema.json#/$defs/payload_digest" } } }
+      ]
+    },
+    "status": { "enum": ["provisional", "completed", "failed", "blocked", "not_reached", "cancelled", "outcome_unknown"] },
+    "observed_outcome": { "enum": ["completed", "failed", "blocked", "not_reached", "cancelled", "outcome_unknown"] },
+    "failure_category": { "enum": ["invalid_input", "unauthorized", "profile_unapproved", "capability_unavailable", "transport_failed", "provider_unavailable", "submission_uncertain", "worker_setup_failed", "source_mismatch", "materialization_failed", "build_failed", "test_collection_failed", "test_assertion_failed", "report_invalid", "timed_out", "worker_resource_exhausted", "worker_lost", "artifact_transport_failed", "cleanup_failed", "unknown"] },
+    "phases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase", "command_id", "status", "started_at", "finished_at"],
+        "properties": {
+          "phase": { "enum": ["prepare", "build", "discover", "test", "collect", "application_start", "application_reset", "cleanup"] },
+          "command_id": { "$ref": "common.schema.json#/$defs/id" },
+          "status": { "enum": ["succeeded", "failed", "skipped", "not_reached", "unknown"] },
+          "exit_code": { "type": "integer" },
+          "failure_category": { "$ref": "#/properties/failure_category" },
+          "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+          "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+          "artifacts": { "type": "array", "maxItems": 100, "items": { "$ref": "common.schema.json#/$defs/artifact" } }
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected_test_ids", "discovered_test_ids", "selected_test_ids", "executed_test_ids", "skipped_test_ids"],
+      "properties": {
+        "expected_test_ids": { "type": "array", "minItems": 1, "maxItems": 10000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "discovered_test_ids": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "selected_test_ids": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "executed_test_ids": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "skipped_test_ids": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 1024 } },
+        "report_artifacts": { "type": "array", "maxItems": 100, "items": { "$ref": "common.schema.json#/$defs/artifact" } }
+      }
+    },
+    "artifacts": { "type": "array", "maxItems": 100, "items": { "$ref": "common.schema.json#/$defs/artifact" } },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "termination_confirmed"],
+      "properties": {
+        "status": { "enum": ["pending", "succeeded", "failed", "not_required", "unknown"] },
+        "termination_confirmed": { "type": "boolean" },
+        "failure_category": { "const": "cleanup_failed" },
+        "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "finalized_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "provisional" } } },
+      "then": { "properties": { "cleanup": { "properties": { "status": { "const": "pending" }, "termination_confirmed": { "const": false } } } }, "not": { "required": ["finalized_at"] } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "completed" } } },
+      "then": { "properties": { "cleanup": { "properties": { "status": { "enum": ["succeeded", "not_required"] }, "termination_confirmed": { "const": true } } }, "finalized_at": { "$ref": "common.schema.json#/$defs/timestamp" } }, "required": ["finalized_at"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+      "then": { "properties": { "observed_outcome": { "const": "completed" } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "required": ["failure_category", "finalized_at"] }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["completed", "failed", "blocked", "not_reached", "cancelled", "outcome_unknown"] } }, "required": ["status"] },
+      "then": { "required": ["finalized_at"], "properties": { "cleanup": { "properties": { "status": { "enum": ["succeeded", "failed", "not_required", "unknown"] } } } } }
+    },
+    {
+      "if": { "properties": { "cleanup": { "properties": { "status": { "const": "failed" } }, "required": ["status"] } }, "required": ["cleanup"] },
+      "then": { "properties": { "cleanup": { "required": ["failure_category"] } } }
+    },
+    {
+      "if": { "properties": { "observed_outcome": { "const": "failed" } }, "required": ["observed_outcome"] },
+      "then": { "required": ["failure_category"] }
+    },
+    {
+      "if": { "properties": { "cleanup": { "properties": { "status": { "const": "not_required" } }, "required": ["status"] } }, "required": ["cleanup"] },
+      "then": { "properties": { "observed_outcome": { "const": "not_reached" }, "cleanup": { "properties": { "termination_confirmed": { "const": true } } } } }
+    },
+    {
+      "if": { "properties": { "cleanup": { "properties": { "status": { "const": "succeeded" } }, "required": ["status"] } }, "required": ["cleanup"] },
+      "then": { "properties": { "cleanup": { "properties": { "termination_confirmed": { "const": true } } } } }
+    }
+  ]
+}

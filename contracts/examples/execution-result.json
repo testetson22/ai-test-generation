@@ -1,0 +1,38 @@
+{
+  "contract": "atg.execution_result",
+  "version": "1.0",
+  "result_id": "fixture-result-1",
+  "task_id": "fixture-task-base",
+  "run_id": "fixture-run-1",
+  "pair_id": "fixture-pair-1",
+  "attempt_id": "fixture-attempt-base-1",
+  "attempt_number": 1,
+  "expected_task_revision": 4,
+  "task_spec_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "subject_role": "base",
+  "source": { "kind": "git-commit", "id": "fixture-commit-base", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+  "subject": { "kind": "source-tree", "id": "fixture-tree-base", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+  "profile": { "profile_id": "fixture-spring-profile", "profile_version": "1.0.0", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" },
+  "provider": { "kind": "execution-provider", "id": "fixture-provider", "version": "1" },
+  "provider_job": { "kind": "provider-job", "id": "fixture-job-base-1" },
+  "worker": { "kind": "worker", "id": "fixture-worker", "version": "1", "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888" },
+  "environment": { "kind": "execution-environment", "id": "fixture-environment", "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999" },
+  "status": "completed",
+  "observed_outcome": "completed",
+  "phases": [
+    { "phase": "test", "command_id": "run-tests", "status": "succeeded", "exit_code": 0, "started_at": "2026-11-17T19:00:00Z", "finished_at": "2026-11-17T19:01:00Z", "artifacts": [] }
+  ],
+  "tests": {
+    "expected_test_ids": ["com.example.SmokeTest#reportsHealthy"],
+    "discovered_test_ids": ["com.example.SmokeTest#reportsHealthy"],
+    "selected_test_ids": ["com.example.SmokeTest#reportsHealthy"],
+    "executed_test_ids": ["com.example.SmokeTest#reportsHealthy"],
+    "skipped_test_ids": [],
+    "report_artifacts": []
+  },
+  "artifacts": [],
+  "cleanup": { "status": "succeeded", "termination_confirmed": true, "finished_at": "2026-11-17T19:02:00Z" },
+  "started_at": "2026-11-17T19:00:00Z",
+  "updated_at": "2026-11-17T19:02:00Z",
+  "finalized_at": "2026-11-17T19:02:00Z"
+}

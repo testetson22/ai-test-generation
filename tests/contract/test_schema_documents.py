@@ -26,6 +26,7 @@ EXPECTED = {
     "execution-task-spec",
     "execution-task",
     "execution-attempt",
+    "execution-result",
     "provider-observation",
     "quality",
     "provenance",
@@ -80,6 +81,7 @@ class ContractSchemaTests(unittest.TestCase):
             "execution-task-spec.json": "execution-task-spec",
             "execution-task.json": "execution-task",
             "execution-attempt.json": "execution-attempt",
+            "execution-result.json": "execution-result",
             "provider-observation.json": "provider-observation",
             "quality.json": "quality",
             "provenance.json": "provenance",
@@ -128,11 +130,45 @@ class ContractSchemaTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self._validator("execution-task-spec").validate(task_spec)
 
+    def test_task_spec_requires_materialized_tests_artifact(self):
+        task_spec = self._load("examples", "execution-task-spec.json")
+        task_spec["generation"]["tests"]["media_type"] = "application/java-archive"
+        with self.assertRaises(ValidationError):
+            self._validator("execution-task-spec").validate(task_spec)
+
     def test_execution_task_completion_is_not_a_test_pass_status(self):
         task = self._load("examples", "execution-task.json")
         task["status"] = "passed"
         with self.assertRaises(ValidationError):
             self._validator("execution-task").validate(task)
+
+        task = self._load("examples", "execution-task.json")
+        task["status"] = "completed"
+        task.pop("execution_result", None)
+        with self.assertRaises(ValidationError):
+            self._validator("execution-task").validate(task)
+
+    def test_execution_result_completion_requires_confirmed_cleanup(self):
+        result = self._load("examples", "execution-result.json")
+        result["cleanup"]["termination_confirmed"] = False
+        with self.assertRaises(ValidationError):
+            self._validator("execution-result").validate(result)
+
+    def test_execution_result_does_not_claim_test_pass(self):
+        result = self._load("examples", "execution-result.json")
+        result["status"] = "passed"
+        with self.assertRaises(ValidationError):
+            self._validator("execution-result").validate(result)
+
+    def test_execution_result_provisional_state_waits_for_cleanup(self):
+        result = self._load("examples", "execution-result.json")
+        result["status"] = "provisional"
+        result.pop("finalized_at")
+        result["cleanup"] = {"status": "pending", "termination_confirmed": False}
+        self._validator("execution-result").validate(result)
+        result["cleanup"]["status"] = "succeeded"
+        with self.assertRaises(ValidationError):
+            self._validator("execution-result").validate(result)
 
     def test_generation_schema_rejects_path_traversal(self):
         validator = self._validator("generation")

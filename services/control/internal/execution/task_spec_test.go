@@ -113,6 +113,12 @@ func TestTaskSpecRejectsApprovalAndRetryPolicyDrift(t *testing.T) {
 	}
 
 	spec = validTaskSpec()
+	spec.Generation.Tests.MediaType = "application/java-archive"
+	if err := spec.Validate(); !errors.Is(err, ErrInvalidTaskSpec) {
+		t.Fatalf("incorrect materialized-test media type error = %v, want invalid spec", err)
+	}
+
+	spec = validTaskSpec()
 	spec.Subject.Source.Locator = "https://user:secret@example.invalid/repository.git"
 	if err := spec.Validate(); !errors.Is(err, ErrInvalidTaskSpec) {
 		t.Fatalf("credential-bearing source URL error = %v, want invalid spec", err)
@@ -156,7 +162,7 @@ func validTaskSpec() TaskSpec {
 		Generation: GenerationRefs{
 			Manifest: Artifact{ArtifactID: "generation-manifest", MediaType: "application/vnd.atg.generation+json", Digest: manifestDigest},
 			Patch:    Artifact{ArtifactID: "patch", MediaType: "text/x-diff", Digest: patchDigest},
-			Tests:    Artifact{ArtifactID: "tests", MediaType: "application/java-archive", Digest: testsDigest},
+			Tests:    Artifact{ArtifactID: "tests", MediaType: "application/vnd.atg.materialized-tests+json", Digest: testsDigest},
 		},
 		CodeApproval: CodeApproval{
 			CheckpointID:             "code-checkpoint-1",

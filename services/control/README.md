@@ -31,3 +31,15 @@ composition; PostgreSQL integration tests run when `ATG_TEST_DATABASE_URL` is se
 production executable does not import or select them. S3-compatible storage,
 HTTP task operations and a real provider adapter are added in later steps.
 See `docs/architecture/flpath-5048-runtime.md` for the selected boundary.
+
+`internal/materialization` reconstructs the approved generated-test files only
+after checking the patch, materialized-file, base-file, subject, and path
+identities; it rejects symlinks and non-regular targets, and verifies exact
+preimages before atomic writes. `internal/artifact.FileStore` is a durable local
+content-addressed development adapter, not the production S3-compatible store.
+`internal/evidence.Publisher` verifies stored evidence bytes, records a provisional
+result before cleanup, then publishes and records a final result only after cleanup
+and termination are known. The PostgreSQL ledger binds both result deliveries to
+the expected task revisions. `execution-result.schema.json` describes operational
+evidence and does not claim test pass; no application-specific commands or worker
+platform are selected by these framework-neutral components.
