@@ -18,6 +18,7 @@ The current SSC demo and any forks are temporary development and compatibility m
 
 - `CONTRIBUTING.md` - contributor workflow and boundary rules.
 - `docs/architecture/repository-layout.md` - workstream-to-path integration map.
+- `docs/architecture/flpath-5048-runtime.md` - initial production controller runtime and storage boundary.
 - `docs/architecture/run-state.md` - lifecycle invariants and required controller task/attempt recovery model.
 - `docs/contributor/parallel-paths.md` - where each parallel workstream places changes.
 - `contracts/README.md` - versioned contract and compatibility rules.
@@ -28,7 +29,9 @@ The current SSC demo and any forks are temporary development and compatibility m
 
 ## Current Target
 
-The VPE/A&P-selected Java 21/Quarkus fixture is an integration context, not a
-mandatory ATG runtime choice. ATG runtime selection remains open while the
-service boundaries are developed. The SSC Spring Boot demo is a temporary
-execution-host baseline and optional fork source.
+The ATG controller's initial production runtime is Go, independent of the Python
+reference and target application. Profile-driven execution starts with SSC's
+Java 17/Spring Boot application. The VPE/A&P-selected Java 21/Quarkus fixture is
+the second-profile portability milestone; it does not block first-target service
+development. See the
+[initial runtime boundary](docs/architecture/flpath-5048-runtime.md).

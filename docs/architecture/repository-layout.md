@@ -149,6 +149,11 @@ checks. It does not implement a general task scheduler, provider-backed executio
 service, or the complete controller recovery protocol. Existing execution and
 differential schemas are not implementations of those capabilities.
 
+Initial FLPATH-5048 runtime/storage choices are recorded in
+[`flpath-5048-runtime.md`](flpath-5048-runtime.md): Go control service, PostgreSQL
+coordination store, and S3-compatible artifact boundary. They do not select the
+worker platform, agent harness, storage vendor, or require one deployable per role.
+
 Do not create one service for each lifecycle phase by default. An agent runner can
 handle several task kinds; a workload worker can use different approved profiles
 for preparation, validation, and execution. Repository build/test code remains
