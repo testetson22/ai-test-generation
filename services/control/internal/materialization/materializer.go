@@ -39,8 +39,7 @@ var unifiedHunkHeader = regexp.MustCompile(`^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]
 
 type Request struct {
 	WorkspaceRoot           string
-	Subject                 execution.Identity
-	WorkspaceSubject        execution.Identity
+	Attestor                WorkspaceAttestor
 	TaskSpec                execution.TaskSpec
 	GenerationManifestJSON  []byte
 	Patch                   []byte
@@ -51,6 +50,12 @@ type Request struct {
 	ExpectedPatchDigest     string
 	ExpectedTestsDigest     string
 	ExpectedBaseFilesDigest string
+}
+
+// WorkspaceAttestor must independently resolve the checked-out source and tree
+// identities; passing a caller-asserted identity is not an attestation.
+type WorkspaceAttestor interface {
+	AttestWorkspace(context.Context, string, execution.Subject) (execution.Subject, error)
 }
 
 type generationManifest struct {
@@ -119,12 +124,11 @@ type Result struct {
 
 // MaterializeApprovedTests verifies the resolved approved handoff, content
 // digests, and exact workspace preimages before writing generated test files.
-func MaterializeApprovedTests(request Request) (Result, error) {
+func MaterializeApprovedTests(ctx context.Context, request Request) (Result, error) {
 	approved, err := verifyApprovedHandoff(request)
 	if err != nil {
 		return Result{}, err
 	}
-	request.Subject = request.TaskSpec.Subject.Identity
 	request.AllowedPaths = approved.AllowedPaths
 	request.ChangedFiles = approved.ChangedFiles
 	request.ExpectedPatchDigest = approved.PatchDigest
@@ -162,8 +166,15 @@ func MaterializeApprovedTests(request Request) (Result, error) {
 	if err := validateFiles(request.ChangedFiles, request.AllowedPaths, files, baseFiles, request.Patch); err != nil {
 		return Result{}, err
 	}
-	if request.Subject.Kind == "" || request.Subject.ID == "" || !validDigest(request.Subject.Digest) || request.WorkspaceSubject != request.Subject {
-		return Result{}, fmt.Errorf("workspace must match the approved immutable subject identity")
+	if request.Attestor == nil {
+		return Result{}, fmt.Errorf("independent workspace identity attestor is required")
+	}
+	attestedSubject, err := request.Attestor.AttestWorkspace(ctx, request.WorkspaceRoot, request.TaskSpec.Subject)
+	if err != nil {
+		return Result{}, fmt.Errorf("attest immutable workspace subject: %w", err)
+	}
+	if !sameAttestedSubject(request.TaskSpec.Subject, attestedSubject) {
+		return Result{}, fmt.Errorf("attested workspace source or tree differs from the approved task subject")
 	}
 	root, err := openWorkspaceRoot(request.WorkspaceRoot)
 	if err != nil {
@@ -204,7 +215,7 @@ func MaterializeApprovedTests(request Request) (Result, error) {
 		}
 	}
 	result := Result{
-		Subject: request.Subject, ChangedFiles: append([]string(nil), request.ChangedFiles...),
+		Subject: request.TaskSpec.Subject.Identity, ChangedFiles: append([]string(nil), request.ChangedFiles...),
 		AllowedPaths: append([]string(nil), request.AllowedPaths...), PatchDigest: patchDigest,
 		MaterializedDigest: materializedDigest, BaseFilesDigest: baseDigest,
 	}
@@ -216,9 +227,9 @@ func MaterializeApprovedTests(request Request) (Result, error) {
 
 // MaterializeFromStore resolves only artifacts closed over by the approved
 // generation manifest and immutable task specification.
-func MaterializeFromStore(ctx context.Context, workspaceRoot string, workspaceSubject execution.Identity, taskSpec execution.TaskSpec, store artifact.Store) (Result, error) {
-	if store == nil {
-		return Result{}, fmt.Errorf("artifact store is required")
+func MaterializeFromStore(ctx context.Context, workspaceRoot string, taskSpec execution.TaskSpec, store artifact.Store, attestor WorkspaceAttestor) (Result, error) {
+	if store == nil || attestor == nil {
+		return Result{}, fmt.Errorf("artifact store and independent workspace identity attestor are required")
 	}
 	if err := taskSpec.Validate(); err != nil {
 		return Result{}, fmt.Errorf("invalid approved task specification: %w", err)
@@ -255,7 +266,7 @@ func MaterializeFromStore(ctx context.Context, workspaceRoot string, workspaceSu
 		return Result{}, fmt.Errorf("resolve approved base preimage artifact: %w", err)
 	}
 	request := Request{
-		WorkspaceRoot: workspaceRoot, Subject: taskSpec.Subject.Identity, WorkspaceSubject: workspaceSubject,
+		WorkspaceRoot: workspaceRoot, Attestor: attestor,
 		TaskSpec: taskSpec, GenerationManifestJSON: manifestBytes, Patch: patchBytes,
 		MaterializedTestsJSON: testsBytes, BaseFilesJSON: baseBytes,
 		AllowedPaths: manifest.Handoff.AllowedPaths, ChangedFiles: manifest.Handoff.ChangedFiles,
@@ -263,7 +274,7 @@ func MaterializeFromStore(ctx context.Context, workspaceRoot string, workspaceSu
 		ExpectedTestsDigest:     taskSpec.Generation.Tests.Digest,
 		ExpectedBaseFilesDigest: baseRef.Digest,
 	}
-	return MaterializeApprovedTests(request)
+	return MaterializeApprovedTests(ctx, request)
 }
 
 func getArtifact(ctx context.Context, store artifact.Store, reference execution.Artifact, limit int64) ([]byte, error) {
@@ -310,8 +321,8 @@ func verifyApprovedHandoff(request Request) (approvedMaterialization, error) {
 	if request.TaskSpec.SubjectRole == "candidate" {
 		selectedSubject = manifest.Candidate
 	}
-	if !identityMatches(selectedSubject, request.TaskSpec.Subject.Identity) || request.Subject != request.TaskSpec.Subject.Identity || request.WorkspaceSubject != request.TaskSpec.Subject.Identity {
-		return approvedMaterialization{}, fmt.Errorf("workspace and task subject do not match the approved generation subject")
+	if !identityMatches(selectedSubject, request.TaskSpec.Subject.Identity) {
+		return approvedMaterialization{}, fmt.Errorf("task subject does not match the approved generation subject")
 	}
 	handoff := manifest.Handoff
 	if handoff.Status != "ready" || handoff.GenerationID != manifest.GenerationID || handoff.RunID != manifest.RunID ||
@@ -388,6 +399,11 @@ func identityMatches(manifestIdentity, taskIdentity execution.Identity) bool {
 	return manifestIdentity.Kind == taskIdentity.Kind && manifestIdentity.ID == taskIdentity.ID &&
 		(manifestIdentity.Version == "" || manifestIdentity.Version == taskIdentity.Version) &&
 		(manifestIdentity.Digest == "" || manifestIdentity.Digest == taskIdentity.Digest)
+}
+
+func sameAttestedSubject(expected, attested execution.Subject) bool {
+	return expected.Source.Identity == attested.Source.Identity && expected.Identity == attested.Identity &&
+		(expected.Source.ContentDigest == "" || expected.Source.ContentDigest == attested.Source.ContentDigest)
 }
 
 func validateFiles(changedFiles, allowedPaths []string, files, baseFiles map[string]string, patch []byte) error {

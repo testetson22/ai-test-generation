@@ -12,6 +12,17 @@ import (
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/execution"
 )
 
+func TestExecutionResultFailedTestsMustBeExecuted(t *testing.T) {
+	result, _ := provisionalResult()
+	if err := result.Validate(); err != nil {
+		t.Fatalf("valid provisional result: %v", err)
+	}
+	result.Tests.FailedTestIDs = []string{"example.OtherTest#not-run"}
+	if err := result.Validate(); err == nil || !strings.Contains(err.Error(), "failed test is not in the executed test set") {
+		t.Fatalf("failed test outside execution inventory error = %v", err)
+	}
+}
+
 func TestPublisherPersistsEvidenceBeforeProvisionalDeliveryAndFinalizesAfterCleanup(t *testing.T) {
 	store, err := artifact.NewFileStore(t.TempDir(), 1_000_000)
 	if err != nil {
@@ -258,7 +269,7 @@ func provisionalResult() (execution.ExecutionResult, Content) {
 		}},
 		Tests: execution.TestExecutionEvidence{
 			ExpectedTestIDs: []string{"example.SmokeTest#works"}, DiscoveredTestIDs: []string{"example.SmokeTest#works"},
-			SelectedTestIDs: []string{"example.SmokeTest#works"}, ExecutedTestIDs: []string{"example.SmokeTest#works"}, SkippedTestIDs: []string{},
+			SelectedTestIDs: []string{"example.SmokeTest#works"}, ExecutedTestIDs: []string{"example.SmokeTest#works"}, SkippedTestIDs: []string{}, FailedTestIDs: []string{},
 		},
 		Artifacts: []execution.Artifact{logReference}, Cleanup: execution.CleanupEvidence{Status: "pending"},
 		StartedAt: "2026-11-17T19:00:00Z", UpdatedAt: "2026-11-17T19:01:00Z",

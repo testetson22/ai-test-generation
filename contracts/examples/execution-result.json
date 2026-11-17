@@ -28,6 +28,7 @@
     "selected_test_ids": ["com.example.SmokeTest#reportsHealthy"],
     "executed_test_ids": ["com.example.SmokeTest#reportsHealthy"],
     "skipped_test_ids": [],
+    "failed_test_ids": [],
     "report_artifacts": []
   },
   "artifacts": [],

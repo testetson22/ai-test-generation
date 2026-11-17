@@ -80,6 +80,7 @@ type TestExecutionEvidence struct {
 	SelectedTestIDs   []string   `json:"selected_test_ids"`
 	ExecutedTestIDs   []string   `json:"executed_test_ids"`
 	SkippedTestIDs    []string   `json:"skipped_test_ids"`
+	FailedTestIDs     []string   `json:"failed_test_ids"`
 	ReportArtifacts   []Artifact `json:"report_artifacts,omitempty"`
 }
 
@@ -199,12 +200,12 @@ func (r ExecutionResult) Validate() error {
 		}
 	}
 	testIDBytes := 0
-	for _, values := range [][]string{r.Tests.ExpectedTestIDs, r.Tests.DiscoveredTestIDs, r.Tests.SelectedTestIDs, r.Tests.ExecutedTestIDs, r.Tests.SkippedTestIDs} {
+	for _, values := range [][]string{r.Tests.ExpectedTestIDs, r.Tests.DiscoveredTestIDs, r.Tests.SelectedTestIDs, r.Tests.ExecutedTestIDs, r.Tests.SkippedTestIDs, r.Tests.FailedTestIDs} {
 		for _, value := range values {
 			testIDBytes += len(value)
 		}
 	}
-	if r.Artifacts == nil || r.Tests.DiscoveredTestIDs == nil || r.Tests.SelectedTestIDs == nil || r.Tests.ExecutedTestIDs == nil || r.Tests.SkippedTestIDs == nil || testIDBytes > MaxTotalTestIDBytes || len(r.Tests.ExpectedTestIDs) == 0 || !uniqueNonEmpty(r.Tests.ExpectedTestIDs) || !uniqueNonEmpty(r.Tests.DiscoveredTestIDs) || !uniqueNonEmpty(r.Tests.SelectedTestIDs) || !uniqueNonEmpty(r.Tests.ExecutedTestIDs) || !uniqueNonEmpty(r.Tests.SkippedTestIDs) {
+	if r.Artifacts == nil || r.Tests.DiscoveredTestIDs == nil || r.Tests.SelectedTestIDs == nil || r.Tests.ExecutedTestIDs == nil || r.Tests.SkippedTestIDs == nil || r.Tests.FailedTestIDs == nil || testIDBytes > MaxTotalTestIDBytes || len(r.Tests.ExpectedTestIDs) == 0 || !uniqueNonEmpty(r.Tests.ExpectedTestIDs) || !uniqueNonEmpty(r.Tests.DiscoveredTestIDs) || !uniqueNonEmpty(r.Tests.SelectedTestIDs) || !uniqueNonEmpty(r.Tests.ExecutedTestIDs) || !uniqueNonEmpty(r.Tests.SkippedTestIDs) || !uniqueNonEmpty(r.Tests.FailedTestIDs) {
 		return fmt.Errorf("execution result test identities are invalid")
 	}
 	expected := make(map[string]struct{}, len(r.Tests.ExpectedTestIDs))
@@ -226,6 +227,11 @@ func (r ExecutionResult) Validate() error {
 	for _, testID := range r.Tests.ExecutedTestIDs {
 		if slices.Contains(r.Tests.SkippedTestIDs, testID) {
 			return fmt.Errorf("test cannot be both executed and skipped")
+		}
+	}
+	for _, testID := range r.Tests.FailedTestIDs {
+		if !slices.Contains(r.Tests.ExecutedTestIDs, testID) {
+			return fmt.Errorf("failed test is not in the executed test set")
 		}
 	}
 	allArtifacts := append(append([]Artifact(nil), r.Artifacts...), r.Tests.ReportArtifacts...)

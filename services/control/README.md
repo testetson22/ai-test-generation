@@ -37,6 +37,13 @@ after checking the patch, materialized-file, base-file, subject, and path
 identities; it rejects symlinks and non-regular targets, and verifies exact
 preimages before atomic writes. `internal/artifact.FileStore` is a durable local
 content-addressed development adapter, not the production S3-compatible store.
+Materialization requires an independent workspace-attestor port; the test echo
+adapter is not production source attestation. `internal/report` accepts only the
+profile-selected `application/xml` report format and bounded JUnit XML, preserving
+failed, skipped, missing, and unexpected test identities without asserting pass.
+`execution.DecodeBoundProfile` strictly decodes profile bytes against the task's
+artifact and approval digests but does not authenticate the reviewer or execute
+profile commands; those require the approved authorization and worker adapters.
 `internal/evidence.Publisher` verifies stored evidence bytes, records a provisional
 result before cleanup, then publishes and records a final result only after cleanup
 and termination are known. The PostgreSQL ledger binds both result deliveries to

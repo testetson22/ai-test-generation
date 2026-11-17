@@ -16,7 +16,7 @@ import (
 func TestMaterializeApprovedTestsWritesExactBytesAndIsIdempotent(t *testing.T) {
 	workspace := t.TempDir()
 	request := materializationRequest(workspace)
-	result, err := MaterializeApprovedTests(request)
+	result, err := MaterializeApprovedTests(context.Background(), request)
 	if err != nil {
 		t.Fatalf("materialize tests: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestMaterializeApprovedTestsWritesExactBytesAndIsIdempotent(t *testing.T) {
 	if result.PatchDigest != request.ExpectedPatchDigest || result.MaterializedDigest != request.ExpectedTestsDigest || len(result.ChangedFiles) != 1 {
 		t.Fatalf("materialization result = %#v", result)
 	}
-	if _, err := MaterializeApprovedTests(request); err != nil {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err != nil {
 		t.Fatalf("idempotent materialization: %v", err)
 	}
 	if err := VerifyMaterializedTests(workspace, result); err != nil {
@@ -55,7 +55,7 @@ func TestMaterializeFromStoreResolvesOnlyApprovedArtifacts(t *testing.T) {
 			t.Fatalf("store approved input artifact: %v", err)
 		}
 	}
-	result, err := MaterializeFromStore(context.Background(), workspace, request.WorkspaceSubject, request.TaskSpec, store)
+	result, err := MaterializeFromStore(context.Background(), workspace, request.TaskSpec, store, request.Attestor)
 	if err != nil {
 		t.Fatalf("materialize approved generation from content store: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestMaterializeApprovedTestsRequiresExactPreimage(t *testing.T) {
 	request.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{request.ChangedFiles[0]: "updated\n"})
 	request.BaseFilesJSON = pythonCanonicalStringMap(map[string]string{request.ChangedFiles[0]: "expected base\n"})
 	request = bindApprovedRequest(request)
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "base content mismatch") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "base content mismatch") {
 		t.Fatalf("preimage mismatch error = %v, want base content mismatch", err)
 	}
 	content, err := os.ReadFile(path)
@@ -94,7 +94,7 @@ func TestMaterializeApprovedTestsRejectsSymlinksFIFOAndTraversal(t *testing.T) {
 		if err := os.Symlink(outside, filepath.Join(workspace, "tests")); err != nil {
 			t.Fatalf("create symlink: %v", err)
 		}
-		if _, err := MaterializeApprovedTests(materializationRequest(workspace)); err == nil || !strings.Contains(err.Error(), "symlink") {
+		if _, err := MaterializeApprovedTests(context.Background(), materializationRequest(workspace)); err == nil || !strings.Contains(err.Error(), "symlink") {
 			t.Fatalf("symlink directory error = %v", err)
 		}
 		entries, err := os.ReadDir(outside)
@@ -112,7 +112,7 @@ func TestMaterializeApprovedTestsRejectsSymlinksFIFOAndTraversal(t *testing.T) {
 		if err := syscall.Mkfifo(filePath, 0o600); err != nil {
 			t.Fatalf("create fifo: %v", err)
 		}
-		if _, err := MaterializeApprovedTests(materializationRequest(workspace)); err == nil || !strings.Contains(err.Error(), "regular file") {
+		if _, err := MaterializeApprovedTests(context.Background(), materializationRequest(workspace)); err == nil || !strings.Contains(err.Error(), "regular file") {
 			t.Fatalf("fifo target error = %v", err)
 		}
 	})
@@ -129,7 +129,7 @@ func TestMaterializeApprovedTestsRejectsSymlinksFIFOAndTraversal(t *testing.T) {
 		if err := os.Symlink(outside, filePath); err != nil {
 			t.Fatalf("create target symlink: %v", err)
 		}
-		if _, err := MaterializeApprovedTests(materializationRequest(workspace)); err == nil {
+		if _, err := MaterializeApprovedTests(context.Background(), materializationRequest(workspace)); err == nil {
 			t.Fatal("materializer followed or replaced a symlink target")
 		}
 		content, err := os.ReadFile(outside)
@@ -144,7 +144,7 @@ func TestMaterializeApprovedTestsRejectsSymlinksFIFOAndTraversal(t *testing.T) {
 		request.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{request.ChangedFiles[0]: "unsafe"})
 		request.Patch = []byte("diff --git a/tests/../outside.java b/tests/../outside.java\n")
 		request = bindApprovedRequest(request)
-		if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "unsafe") {
 			t.Fatalf("traversal error = %v", err)
 		}
 	})
@@ -153,28 +153,31 @@ func TestMaterializeApprovedTestsRejectsSymlinksFIFOAndTraversal(t *testing.T) {
 func TestMaterializeApprovedTestsRejectsDigestInventoryAndRootMismatches(t *testing.T) {
 	request := materializationRequest(t.TempDir())
 	request.Patch = append(request.Patch, 'x')
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "patch digest mismatch") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "patch digest mismatch") {
 		t.Fatalf("patch digest error = %v", err)
 	}
 
 	request = materializationRequest(t.TempDir())
 	request.AllowedPaths = []string{"src/test/"}
 	request = bindApprovedRequest(request)
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "outside approved") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "outside approved") {
 		t.Fatalf("path root error = %v", err)
 	}
 
 	request = materializationRequest(t.TempDir())
 	request.ChangedFiles = []string{"tests/OtherTest.java", "tests/AnotherTest.java"}
 	request = bindApprovedRequest(request)
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "inventory") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "inventory") {
 		t.Fatalf("changed file inventory error = %v", err)
 	}
 
 	request = materializationRequest(t.TempDir())
-	request.WorkspaceSubject.ID = "different-subject"
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "task subject") {
-		t.Fatalf("workspace subject error = %v", err)
+	request.Attestor = fixedWorkspaceAttestor{subject: execution.Subject{
+		Source:   request.TaskSpec.Subject.Source,
+		Identity: execution.Identity{Kind: "source-tree", ID: "different-subject", Version: "1", Digest: "sha256:" + strings.Repeat("1", 64)},
+	}}
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "attested workspace") {
+		t.Fatalf("workspace attestation mismatch error = %v", err)
 	}
 
 	target := t.TempDir()
@@ -183,8 +186,21 @@ func TestMaterializeApprovedTestsRejectsDigestInventoryAndRootMismatches(t *test
 		t.Fatalf("create workspace root symlink: %v", err)
 	}
 	request = materializationRequest(link)
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "real directory") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "real directory") {
 		t.Fatalf("workspace root symlink error = %v", err)
+	}
+}
+
+func TestMaterializationRequiresIndependentWorkspaceAttestation(t *testing.T) {
+	workspace := t.TempDir()
+	request := materializationRequest(workspace)
+	request.Attestor = nil
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "independent workspace identity attestor") {
+		t.Fatalf("missing attestor error = %v", err)
+	}
+	path := filepath.Join(workspace, filepath.FromSlash(request.ChangedFiles[0]))
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("workspace changed without attestation: stat error = %v", err)
 	}
 }
 
@@ -192,7 +208,7 @@ func TestMaterializeApprovedTestsRequiresPatchToReproduceFinalArtifact(t *testin
 	request := materializationRequest(t.TempDir())
 	request.Patch = []byte("diff --git a/tests/GeneratedTest.java b/tests/GeneratedTest.java\nnew file mode 100644\n--- /dev/null\n+++ b/tests/GeneratedTest.java\n@@ -0,0 +1,1 @@\n+class DifferentTest {}\n")
 	request = bindApprovedRequest(request)
-	if _, err := MaterializeApprovedTests(request); err == nil || !strings.Contains(err.Error(), "does not reproduce approved") {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err == nil || !strings.Contains(err.Error(), "does not reproduce approved") {
 		t.Fatalf("patch and materialized artifact mismatch = %v", err)
 	}
 }
@@ -211,7 +227,7 @@ func TestMaterializeApprovedTestsPreservesMissingFinalNewline(t *testing.T) {
 	request.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{request.ChangedFiles[0]: "new"})
 	request.BaseFilesJSON = pythonCanonicalStringMap(map[string]string{request.ChangedFiles[0]: "old"})
 	request = bindApprovedRequest(request)
-	if _, err := MaterializeApprovedTests(request); err != nil {
+	if _, err := MaterializeApprovedTests(context.Background(), request); err != nil {
 		t.Fatalf("materialize file without final newline: %v", err)
 	}
 	content, err := os.ReadFile(filePath)
@@ -233,10 +249,9 @@ func materializationRequest(workspace string) Request {
 	testsJSON := pythonCanonicalStringMap(files)
 	baseJSON := []byte("{}")
 	request := Request{
-		WorkspaceRoot:    workspace,
-		Subject:          execution.Identity{Kind: "source-tree", ID: "subject-1", Version: "1", Digest: "sha256:" + strings.Repeat("1", 64)},
-		WorkspaceSubject: execution.Identity{Kind: "source-tree", ID: "subject-1", Version: "1", Digest: "sha256:" + strings.Repeat("1", 64)},
-		Patch:            patch, MaterializedTestsJSON: testsJSON, BaseFilesJSON: baseJSON,
+		WorkspaceRoot: workspace,
+		Attestor:      echoWorkspaceAttestor{},
+		Patch:         patch, MaterializedTestsJSON: testsJSON, BaseFilesJSON: baseJSON,
 		AllowedPaths: []string{"tests/"}, ChangedFiles: []string{"tests/GeneratedTest.java"},
 	}
 	return bindApprovedRequest(request)
@@ -254,7 +269,7 @@ func bindApprovedRequest(request Request) Request {
 	patchDigest := digest(request.Patch)
 	testsDigest := digest(pythonCanonicalStringMap(files))
 	baseDigest := digest(pythonCanonicalStringMap(baseFiles))
-	base := request.Subject
+	base := execution.Identity{Kind: "source-tree", ID: "subject-1", Version: "1", Digest: "sha256:" + strings.Repeat("1", 64)}
 	candidate := execution.Identity{Kind: "source-tree", ID: "candidate-1", Version: "2", Digest: "sha256:" + strings.Repeat("2", 64)}
 	patchRef := execution.Artifact{ArtifactID: "patch-1", MediaType: "text/x-diff", Digest: patchDigest, SizeBytes: int64(len(request.Patch))}
 	testsCanonical := pythonCanonicalStringMap(files)
@@ -314,4 +329,16 @@ func bindApprovedRequest(request Request) Request {
 		panic(err)
 	}
 	return request
+}
+
+type echoWorkspaceAttestor struct{}
+
+func (echoWorkspaceAttestor) AttestWorkspace(_ context.Context, _ string, expected execution.Subject) (execution.Subject, error) {
+	return expected, nil
+}
+
+type fixedWorkspaceAttestor struct{ subject execution.Subject }
+
+func (attestor fixedWorkspaceAttestor) AttestWorkspace(context.Context, string, execution.Subject) (execution.Subject, error) {
+	return attestor.subject, nil
 }

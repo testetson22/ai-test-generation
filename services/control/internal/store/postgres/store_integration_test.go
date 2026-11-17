@@ -320,7 +320,7 @@ func TestPostgresEvidenceDeliveryIsProvisionalUntilCleanupIsConfirmed(t *testing
 		Tests: execution.TestExecutionEvidence{
 			ExpectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), DiscoveredTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
 			SelectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), ExecutedTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
-			SkippedTestIDs: []string{},
+			SkippedTestIDs: []string{}, FailedTestIDs: []string{},
 		},
 		Artifacts: []execution.Artifact{logRef}, Cleanup: execution.CleanupEvidence{Status: "pending"},
 		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: finishedText,
@@ -449,7 +449,7 @@ func TestPostgresFailedAttemptRetainsItsEvidenceThroughCleanup(t *testing.T) {
 		Tests: execution.TestExecutionEvidence{
 			ExpectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), DiscoveredTestIDs: []string{},
 			SelectedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), ExecutedTestIDs: []string{},
-			SkippedTestIDs: append([]string(nil), spec.ExpectedTestIDs...),
+			SkippedTestIDs: append([]string(nil), spec.ExpectedTestIDs...), FailedTestIDs: []string{},
 		},
 		Artifacts: []execution.Artifact{logRef}, Cleanup: execution.CleanupEvidence{Status: "pending"},
 		StartedAt: now.Format(time.RFC3339Nano), UpdatedAt: finishedText,
