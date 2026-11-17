@@ -1,0 +1,16 @@
+{
+  "contract": "atg.provider_observation",
+  "version": "1.0",
+  "observation_id": "fixture-observation-base-2",
+  "task_id": "fixture-task-base",
+  "attempt_id": "fixture-attempt-base-2",
+  "provider": { "kind": "test-provider", "id": "provider-simulator", "version": "1" },
+  "provider_job": { "kind": "test-job", "id": "fixture-job-base-2" },
+  "sequence": 1,
+  "status": "running",
+  "phase": "test",
+  "worker": { "kind": "test-worker", "id": "fixture-worker-base-2" },
+  "result_artifacts": [],
+  "observed_at": "2026-11-17T19:05:03Z",
+  "received_at": "2026-11-17T19:05:04Z"
+}

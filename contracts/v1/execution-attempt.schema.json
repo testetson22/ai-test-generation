@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-attempt.schema.json",
+  "title": "ATG durable authorized execution attempt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "attempt_id", "task_id", "run_id", "attempt_number", "task_spec_digest", "submission_token", "status", "provider", "fencing_token", "created_at", "updated_at"],
+  "properties": {
+    "contract": { "const": "atg.execution_attempt" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "attempt_id": { "$ref": "common.schema.json#/$defs/id" },
+    "task_id": { "$ref": "common.schema.json#/$defs/id" },
+    "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "attempt_number": { "type": "integer", "minimum": 1 },
+    "predecessor_attempt_id": { "$ref": "common.schema.json#/$defs/id" },
+    "retry_authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_id", "policy_id", "failure_category", "authorized_at"],
+      "properties": {
+        "decision_id": { "$ref": "common.schema.json#/$defs/id" },
+        "policy_id": { "$ref": "common.schema.json#/$defs/id" },
+        "failure_category": { "enum": ["submission_uncertain", "provider_unavailable", "worker_lost", "worker_resource_exhausted", "artifact_transport_failed"] },
+        "authorized_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "task_spec_digest": { "$ref": "common.schema.json#/$defs/payload_digest" },
+    "submission_token": { "$ref": "common.schema.json#/$defs/id" },
+    "status": { "enum": ["prepared", "submission_unknown", "submitted", "running", "collecting", "completed", "failed", "blocked", "not_reached", "cancel_requested", "cancelled", "outcome_unknown", "superseded"] },
+    "provider": { "$ref": "common.schema.json#/$defs/identity" },
+    "provider_job": { "$ref": "common.schema.json#/$defs/identity" },
+    "worker": { "$ref": "common.schema.json#/$defs/identity" },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["holder", "lease_expires_at"],
+      "properties": {
+        "holder": { "$ref": "common.schema.json#/$defs/identity" },
+        "lease_expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "fencing_token": { "type": "integer", "minimum": 1 },
+    "failure_category": { "enum": ["invalid_input", "unauthorized", "profile_unapproved", "capability_unavailable", "transport_failed", "provider_unavailable", "submission_uncertain", "worker_setup_failed", "source_mismatch", "materialization_failed", "build_failed", "test_collection_failed", "test_assertion_failed", "report_invalid", "timed_out", "worker_resource_exhausted", "worker_lost", "artifact_transport_failed", "cleanup_failed", "unknown"] },
+    "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "finished_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "attempt_number": { "minimum": 2 } } },
+      "then": { "required": ["predecessor_attempt_id", "retry_authorization"] }
+    },
+    {
+      "if": { "properties": { "attempt_number": { "const": 1 } } },
+      "then": { "not": { "required": ["retry_authorization"] } }
+    },
+    {
+      "if": { "properties": { "status": { "enum": ["failed", "blocked"] } } },
+      "then": { "required": ["failure_category"] }
+    }
+  ]
+}

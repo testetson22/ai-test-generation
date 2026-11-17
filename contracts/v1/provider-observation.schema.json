@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/provider-observation.schema.json",
+  "title": "ATG normalized execution provider observation",
+  "description": "An observation reported by a provider is not controller acceptance of test outcome or evidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "observation_id", "task_id", "attempt_id", "provider", "sequence", "status", "observed_at", "received_at"],
+  "properties": {
+    "contract": { "const": "atg.provider_observation" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "observation_id": { "$ref": "common.schema.json#/$defs/id" },
+    "task_id": { "$ref": "common.schema.json#/$defs/id" },
+    "attempt_id": { "$ref": "common.schema.json#/$defs/id" },
+    "provider": { "$ref": "common.schema.json#/$defs/identity" },
+    "provider_job": { "$ref": "common.schema.json#/$defs/identity" },
+    "sequence": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["pending", "running", "completed", "failed", "cancel_requested", "cancelled", "not_found", "outcome_unknown"] },
+    "phase": { "enum": ["queued", "prepare", "build", "discover", "test", "collect", "cleanup"] },
+    "failure_category": { "enum": ["provider_unavailable", "worker_setup_failed", "source_mismatch", "materialization_failed", "build_failed", "test_collection_failed", "test_assertion_failed", "report_invalid", "timed_out", "worker_resource_exhausted", "worker_lost", "artifact_transport_failed", "cleanup_failed", "unknown"] },
+    "worker": { "$ref": "common.schema.json#/$defs/identity" },
+    "result_artifacts": { "type": "array", "items": { "$ref": "common.schema.json#/$defs/artifact" }, "uniqueItems": true },
+    "termination_confirmed": { "type": "boolean" },
+    "observed_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "received_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "required": ["failure_category"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "cancelled" } } },
+      "then": { "properties": { "termination_confirmed": { "const": true } } }
+    }
+  ]
+}

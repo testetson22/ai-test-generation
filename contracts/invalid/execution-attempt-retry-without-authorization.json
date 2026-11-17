@@ -1,0 +1,15 @@
+{
+  "contract": "atg.execution_attempt",
+  "version": "1.0",
+  "attempt_id": "fixture-attempt-base-2",
+  "task_id": "fixture-task-base",
+  "run_id": "fixture-run-1",
+  "attempt_number": 2,
+  "task_spec_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "submission_token": "fixture-submit-base-2",
+  "status": "prepared",
+  "provider": { "kind": "test-provider", "id": "provider-simulator" },
+  "fencing_token": 2,
+  "created_at": "2026-11-17T19:05:00Z",
+  "updated_at": "2026-11-17T19:05:00Z"
+}

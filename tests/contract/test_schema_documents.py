@@ -22,6 +22,11 @@ EXPECTED = {
     "feedback",
     "generation",
     "execution",
+    "execution-profile",
+    "execution-task-spec",
+    "execution-task",
+    "execution-attempt",
+    "provider-observation",
     "quality",
     "provenance",
     "preflight",
@@ -71,6 +76,11 @@ class ContractSchemaTests(unittest.TestCase):
             "checkpoint.json": "checkpoint",
             "execution.json": "execution",
             "execution-base.json": "execution",
+            "execution-profile-test.json": "execution-profile",
+            "execution-task-spec.json": "execution-task-spec",
+            "execution-task.json": "execution-task",
+            "execution-attempt.json": "execution-attempt",
+            "provider-observation.json": "provider-observation",
             "quality.json": "quality",
             "provenance.json": "provenance",
             "preflight.json": "preflight",
@@ -87,6 +97,42 @@ class ContractSchemaTests(unittest.TestCase):
     def test_invalid_event_fixture_is_rejected_by_event_schema(self):
         with self.assertRaises(ValidationError):
             self._validator("run-event").validate(self._load("invalid", "run-event-missing-decision.json"))
+
+    def test_execution_attempt_retry_requires_controller_authorization(self):
+        with self.assertRaises(ValidationError):
+            self._validator("execution-attempt").validate(
+                self._load("invalid", "execution-attempt-retry-without-authorization.json")
+            )
+
+    def test_provider_cancelled_observation_requires_confirmed_termination(self):
+        with self.assertRaises(ValidationError):
+            self._validator("provider-observation").validate(
+                self._load("invalid", "provider-observation-cancel-unconfirmed.json")
+            )
+
+    def test_execution_profile_requires_pinned_image_and_bounded_commands(self):
+        validator = self._validator("execution-profile")
+        profile = self._load("examples", "execution-profile-test.json")
+        profile["worker_image"].pop("digest")
+        with self.assertRaises(ValidationError):
+            validator.validate(profile)
+
+        profile = self._load("examples", "execution-profile-test.json")
+        profile["commands"][0]["working_directory"] = "../outside"
+        with self.assertRaises(ValidationError):
+            validator.validate(profile)
+
+    def test_task_spec_retry_policy_cannot_retry_assertion_failures(self):
+        task_spec = self._load("examples", "execution-task-spec.json")
+        task_spec["retry_policy"]["retryable_failures"].append("test_assertion_failed")
+        with self.assertRaises(ValidationError):
+            self._validator("execution-task-spec").validate(task_spec)
+
+    def test_execution_task_completion_is_not_a_test_pass_status(self):
+        task = self._load("examples", "execution-task.json")
+        task["status"] = "passed"
+        with self.assertRaises(ValidationError):
+            self._validator("execution-task").validate(task)
 
     def test_generation_schema_rejects_path_traversal(self):
         validator = self._validator("generation")

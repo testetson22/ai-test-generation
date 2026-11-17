@@ -13,7 +13,9 @@ in `v1/common.schema.json`.
 The lifecycle is represented by:
 
 - `request`, `platform-readiness`, `run-admission`, `preflight`, `objective`, `plan`, and `checkpoint` for stage-zero admission and review. Platform readiness is service-level; run admission is request-level.
-- `feedback`, `generation`, `execution`, and `quality` for Analyze -> Plan -> Code -> Execute.
+- `feedback`, `generation`, `execution`, `execution-profile`,
+  `execution-task-spec`, `execution-task`, `execution-attempt`,
+  `provider-observation`, and `quality` for Analyze -> Plan -> Code -> Execute.
 - `provenance` and `signed-differential` for reproducible, owner-reviewable evidence.
 - `run-state` and `run-event` for durable, idempotent workflow state transitions.
 - `compatibility` for recording schema migration results instead of guessing compatibility.
@@ -27,6 +29,14 @@ Individual schema validation is supplemented by cross-document integrity
 checks in `src/atg/domain/contract_integrity.py`. These checks ensure that
 plans, generations, executions, quality results, provenance, and signed
 differentials belong to the same run and resolve their referenced IDs.
+
+Execution profiles are trusted, versioned application/toolchain policies; they
+are not approvals. Immutable task specifications bind a subject, approved
+generation artifacts, profile artifact and approval, expected tests, and retry
+policy. Durable task/attempt records express operational state, while provider
+observations remain reports for controller reconciliation, not accepted test
+outcomes. These schemas define payloads only; transactional claims, cross-document
+digest/approval checks, and artifact durability are enforced by the controller.
 
 The HTTP boundary, schema publication, and signed-differential options are
 documented in `docs/architecture/contract-distribution-and-api.md`.

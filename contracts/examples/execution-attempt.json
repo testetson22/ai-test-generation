@@ -1,0 +1,27 @@
+{
+  "contract": "atg.execution_attempt",
+  "version": "1.0",
+  "attempt_id": "fixture-attempt-base-2",
+  "task_id": "fixture-task-base",
+  "run_id": "fixture-run-1",
+  "attempt_number": 2,
+  "predecessor_attempt_id": "fixture-attempt-base-1",
+  "retry_authorization": {
+    "decision_id": "fixture-retry-decision-2",
+    "policy_id": "fixture-retry-policy",
+    "failure_category": "worker_lost",
+    "authorized_at": "2026-11-17T19:05:00Z"
+  },
+  "task_spec_digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "submission_token": "fixture-submit-base-2",
+  "status": "submitted",
+  "provider": { "kind": "test-provider", "id": "provider-simulator", "version": "1" },
+  "provider_job": { "kind": "test-job", "id": "fixture-job-base-2" },
+  "claim": {
+    "holder": { "kind": "controller", "id": "controller-1" },
+    "lease_expires_at": "2026-11-17T19:06:00Z"
+  },
+  "fencing_token": 2,
+  "created_at": "2026-11-17T19:05:00Z",
+  "updated_at": "2026-11-17T19:05:01Z"
+}

@@ -1,0 +1,13 @@
+{
+  "contract": "atg.provider_observation",
+  "version": "1.0",
+  "observation_id": "fixture-observation-cancel",
+  "task_id": "fixture-task-base",
+  "attempt_id": "fixture-attempt-base-1",
+  "provider": { "kind": "test-provider", "id": "provider-simulator" },
+  "sequence": 2,
+  "status": "cancelled",
+  "termination_confirmed": false,
+  "observed_at": "2026-11-17T19:05:03Z",
+  "received_at": "2026-11-17T19:05:04Z"
+}

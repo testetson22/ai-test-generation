@@ -1,0 +1,57 @@
+{
+  "contract": "atg.execution_task_spec",
+  "version": "1.0",
+  "task_spec_id": "fixture-task-spec-base",
+  "run_id": "fixture-run-1",
+  "pair_id": "fixture-pair-1",
+  "generation_id": "fixture-generation-1",
+  "subject_role": "base",
+  "subject": {
+    "source": {
+      "identity": { "kind": "git-commit", "id": "fixture-commit-base", "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
+      "locator": "https://example.invalid/fixture.git"
+    },
+    "identity": { "kind": "source-tree", "id": "fixture-tree-base", "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222" }
+  },
+  "generation": {
+    "manifest": { "artifact_id": "fixture-generation-manifest", "media_type": "application/vnd.atg.generation+json", "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333" },
+    "patch": { "artifact_id": "fixture-patch", "media_type": "text/x-diff", "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444" },
+    "tests": { "artifact_id": "fixture-generated-tests", "media_type": "application/java-archive", "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555" }
+  },
+  "code_approval": {
+    "checkpoint_id": "fixture-code-checkpoint",
+    "decision_id": "fixture-code-decision",
+    "reviewer": {
+      "identity": { "kind": "person", "id": "fixture-reviewer" },
+      "role": "test-reviewer",
+      "authorization_ref": "fixture-review-authorization",
+      "authenticated_at": "2026-11-17T19:00:00Z"
+    },
+    "reviewed_generation_digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "profile": {
+    "profile_id": "fixture-spring-profile",
+    "profile_version": "1.0.0",
+    "artifact": { "artifact_id": "fixture-profile", "media_type": "application/vnd.atg.execution-profile+json", "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777" }
+  },
+  "profile_approval": {
+    "decision_id": "fixture-profile-decision",
+    "reviewer": {
+      "identity": { "kind": "person", "id": "fixture-profile-reviewer" },
+      "role": "execution-profile-reviewer",
+      "authorization_ref": "fixture-profile-authorization",
+      "authenticated_at": "2026-11-17T19:00:00Z"
+    },
+    "approved_profile_digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "expected_test_ids": ["com.example.SmokeTest#reportsHealthy"],
+  "retry_policy": {
+    "policy_id": "fixture-retry-policy",
+    "max_attempts": 2,
+    "deadline_at": "2026-11-18T19:00:00Z",
+    "initial_backoff_seconds": 10,
+    "max_backoff_seconds": 60,
+    "retryable_failures": ["worker_lost", "provider_unavailable"]
+  },
+  "created_at": "2026-11-17T19:00:00Z"
+}

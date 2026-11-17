@@ -23,6 +23,11 @@ EXAMPLES = {
     "run-event": "run-event-checkpoint.json",
     "checkpoint": "checkpoint.json",
     "execution": ["execution.json", "execution-base.json"],
+    "execution-profile": "execution-profile-test.json",
+    "execution-task-spec": "execution-task-spec.json",
+    "execution-task": "execution-task.json",
+    "execution-attempt": "execution-attempt.json",
+    "provider-observation": "provider-observation.json",
     "quality": "quality.json",
     "provenance": "provenance.json",
     "preflight": "preflight.json",
@@ -79,6 +84,8 @@ def validate_contracts(
         ("preflight", "preflight-ready-required-check-failed.json"),
         ("preflight", "preflight-not-evaluable-rejected-required-check-failed.json"),
         ("generation", "generation-path-traversal.json"),
+        ("execution-attempt", "execution-attempt-retry-without-authorization.json"),
+        ("provider-observation", "provider-observation-cancel-unconfirmed.json"),
     ]
     for name, filename in invalid_fixtures:
         invalid_document = json.loads((invalid_root / filename).read_text())

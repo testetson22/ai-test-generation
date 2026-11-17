@@ -1,0 +1,46 @@
+{
+  "contract": "atg.execution_profile",
+  "version": "1.0",
+  "profile_id": "fixture-spring-profile",
+  "profile_version": "1.0.0",
+  "application": { "kind": "fixture-application", "id": "spring-test-fixture", "version": "1.0" },
+  "source_policy": {
+    "repository": "https://example.invalid/fixture.git",
+    "revision_policy": "immutable",
+    "allowed_source_roots": ["src/main", "src/test"]
+  },
+  "target": {
+    "language": "java",
+    "framework": "spring-boot",
+    "framework_version": "2.7.18",
+    "runtime": { "kind": "jdk", "id": "fixture-jdk", "version": "17" },
+    "build_tool": { "kind": "maven", "id": "fixture-maven", "version": "3.9.11" }
+  },
+  "worker_image": { "kind": "oci-image", "id": "fixture-worker", "version": "1.0.0", "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" },
+  "commands": [
+    {
+      "command_id": "fixture-test",
+      "phase": "test",
+      "argv": ["mvn", "-B", "-ntp", "-Dtest=SmokeTest", "test"],
+      "working_directory": "workspace",
+      "timeout_seconds": 300,
+      "environment_names": ["MAVEN_OPTS"]
+    }
+  ],
+  "test_selection": {
+    "command_id": "fixture-test",
+    "selector": "SmokeTest",
+    "report_media_type": "application/vnd.junit.xml",
+    "minimum_test_count": 1
+  },
+  "limits": {
+    "wall_timeout_seconds": 600,
+    "cpu_millis": 2000,
+    "memory_bytes": 2147483648,
+    "max_pids": 128,
+    "max_output_bytes": 1048576,
+    "max_artifact_bytes": 10485760
+  },
+  "network_policy": { "mode": "disabled", "allowed_hosts": [] },
+  "credential_policy": { "workload_credentials": "none", "acquisition_credential_refs": [] }
+}
