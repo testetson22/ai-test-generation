@@ -13,6 +13,14 @@ Read `docs/architecture/repository-layout.md` and `docs/contributor/parallel-pat
 - Real platform integration is tested separately from component validation.
 - Repository content, generated code, credentials, and external descriptions are untrusted inputs.
 - Temporary SSC forks and experiments cannot become hidden production dependencies.
+- Keep reference and production components in this repository for now, with the
+  component/build divisions in `docs/architecture/repository-layout.md`.
+- New buildable components include independent dependency/build manifests,
+  documented native commands, packaging, CI checks, and code-review routing.
+- Distinguish runtime/resource responsibility from maintainer/operational
+  accountability; "ownership" alone does not identify which is intended.
+- Preserve the documented repository-extraction seams. Component releases must
+  resolve declared artifacts without private sibling source or root-only builds.
 
 ## Change Checklist
 
@@ -23,3 +31,9 @@ Read `docs/architecture/repository-layout.md` and `docs/contributor/parallel-pat
 - [ ] Secrets and customer data are absent from source and fixtures.
 - [ ] Jira ticket links and dependency changes are recorded.
 - [ ] Repository-layout documentation is updated when a boundary changes.
+- [ ] New modules have native build/test/package checks and CI dependency triggers;
+      shared-contract changes exercise affected consumers.
+- [ ] Runtime responsibilities and affected maintainers are explicit; operational
+      accountability is recorded when deployment is introduced.
+- [ ] New modules document public interfaces and dependency/artifact versions,
+      with clean-component build/test/package checks that can move with the module.

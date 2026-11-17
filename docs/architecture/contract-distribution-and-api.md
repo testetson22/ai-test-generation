@@ -67,6 +67,34 @@ with the same name.
 The current `$id` namespace is valid as a future publication namespace, but it
 is not evidence that the URLs are already reachable.
 
+## Repository-Independent Consumption
+
+Contracts remain canonical in this repository until an explicit relocation
+decision. New production modules must be able to consume them without depending
+on this checkout, its directory layout, or the Python reference implementation.
+
+- Declare the supported contract versions and pin a released bundle/package or
+  reproducible source snapshot with its digest. Resolve/register schemas locally
+  at runtime; do not fetch mutable `main` or require publication-site uptime.
+- Include the schemas needed for reference closure and identify matching fixture,
+  digest-vector, and conformance-suite versions. Generated language models or
+  clients are derived assets, not an alternative source of contract authority.
+- A future source-repository move must not silently rewrite established `$id`
+  URLs, payload versions, or evidence identities. Preserve the resolver namespace
+  or perform an explicit versioned migration while supporting existing consumers.
+- Record compatibility and affected consumer checks before publishing a contract
+  change. Separate repositories cannot rely on a single atomic commit; release
+  ordering and deployment pins must tolerate the supported version combinations.
+- Apply the same declared-artifact rule to shared fixtures and simulator testkits.
+  A Go/Java consumer must not need the Python runtime solely to obtain schemas or
+  portable conformance data; native execution tests remain the consumer's job.
+
+The current Pages publisher emits schemas and their digest catalog, and the
+Python wheel bundles schema assets. Independently released schema/conformance
+bundles and cross-repository consumer CI are future implementation work, not
+capabilities already supplied by those mechanisms. Establish them when the first
+independent consumer needs them; do not add empty distribution packages now.
+
 ## Signed Differential Direction
 
 DSSE provides a generic signed envelope containing payload bytes, a payload type,

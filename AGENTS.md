@@ -28,17 +28,30 @@ once the upstream ownership and format are confirmed.
 
 - `contracts/`: canonical versioned JSON Schemas, fixtures, compatibility data,
   and development override profiles.
-- `src/atg/`: ATG service implementation, ports, adapters, and development
-  components. The initial service may be split into multiple deployables later.
+- `src/atg/`: Python reference implementation, ports, adapters, and development
+  components; not an implicit selection of the production runtime.
+- `services/<component>/`: reserved for production runtime modules with explicit
+  interfaces and independent dependency manifests, builds, and tests.
+- `workers/<profile>/`: reserved for workload images and execution profiles;
+  environment-specific composition belongs under `deploy/`.
 - `tests/`: schema, contract-integrity, state-machine, persistence, HTTP, and
   component tests.
 - `scripts/`: contract validation and schema publication tools.
 - `deploy/`: SSC-hosted replacement deployment guidance.
 - `docs/`: architecture and lifecycle decisions.
 
-The initial implementation is Python. The ATG runtime language remains open;
+Keep the reference and production components in this repository for now. The
+`services/` and `workers/` paths are conventions, not existing implementations;
+create them only with concrete implementation work. Follow
+`docs/architecture/repository-layout.md` for component, build, and ownership rules.
+Preserve its future repository separation points: explicit versioned interfaces
+and dependency artifacts, clean-component builds, and no private sibling imports
+or database coupling. A later repository move must not change public contract
+identities or create multiple lifecycle authorities.
+
+The reference implementation is Python. ATG runtime languages remain open;
 Go, Java/Quarkus, or Python may be selected based on service, platform, and
-integration requirements. A later runtime change or service split must
+integration requirements for each component. A runtime change or service split must
 preserve the observable contract, revision, replay, checkpoint, and error
 semantics covered by the tests.
 
@@ -55,6 +68,10 @@ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m unittest discover -s tests -p 'tes
 
 Pull requests run the same checks through
 `.github/workflows/atg-contracts-and-components.yml`.
+These commands validate the Python reference and shared contracts, not future
+Go/Java/other components. Every new buildable component must add its native build,
+test, packaging, and CI checks; shared-contract changes must exercise affected
+consumers. Do not require unrelated toolchains to build the reference.
 Commits to `main` publish the current schemas through
 `.github/workflows/publish-schemas.yml`.
 
