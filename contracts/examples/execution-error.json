@@ -1,0 +1,6 @@
+{
+  "contract": "atg.execution_error",
+  "version": "1.0",
+  "code": "conflict",
+  "message": "request conflicts with current execution state"
+}

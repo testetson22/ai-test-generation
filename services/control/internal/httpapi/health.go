@@ -9,6 +9,7 @@ type Dependencies struct {
 	Postgres      bool
 	ArtifactStore bool
 	Provider      bool
+	Execution     *ExecutionAPI
 }
 
 func NewHandler(dependencies Dependencies) http.Handler {
@@ -17,7 +18,19 @@ func NewHandler(dependencies Dependencies) http.Handler {
 	mux.HandleFunc("GET /health/ready", func(w http.ResponseWriter, _ *http.Request) {
 		ready(w, dependencies)
 	})
+	if dependencies.Execution != nil {
+		dependencies.Execution.Register(mux)
+	} else {
+		mux.HandleFunc("POST /execution-pairs", unavailable)
+		mux.HandleFunc("GET /execution-pairs/{pairID}", unavailable)
+		mux.HandleFunc("GET /executions/{taskID}", unavailable)
+		mux.HandleFunc("POST /execution-pairs/{pairID}/cancel", unavailable)
+	}
 	return mux
+}
+
+func unavailable(w http.ResponseWriter, _ *http.Request) {
+	writeAPIError(w, http.StatusServiceUnavailable, "execution_unconfigured", "execution API dependencies are not configured")
 }
 
 func live(w http.ResponseWriter, _ *http.Request) {
@@ -29,6 +42,7 @@ func ready(w http.ResponseWriter, dependencies Dependencies) {
 		"postgres":       dependencyStatus(dependencies.Postgres),
 		"artifact_store": dependencyStatus(dependencies.ArtifactStore),
 		"provider":       dependencyStatus(dependencies.Provider),
+		"execution_api":  dependencyStatus(dependencies.Execution.Ready()),
 	}
 	status := http.StatusOK
 	state := "ready"

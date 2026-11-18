@@ -1,0 +1,6 @@
+{
+  "contract": "atg.execution_cancel_request",
+  "version": "1.0",
+  "expected_base_task_revision": 7,
+  "expected_candidate_task_revision": 7
+}

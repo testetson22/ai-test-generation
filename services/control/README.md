@@ -12,11 +12,11 @@ make race
 until the deployment platform and target architecture are selected; the module
 does not depend on the Docker daemon to build or test.
 
-The current bootstrap exposes liveness and readiness only. Readiness remains
-blocked until durable state, artifact storage, and an execution provider are
-implemented and initialized. Supplying configuration strings does not make an
-unimplemented backend ready. No simulated backend is included in the production
-binary.
+The executable exposes liveness and readiness plus fail-closed execution routes.
+Readiness remains blocked until durable state, artifact storage, an execution
+provider, and the execution API adapters are initialized. Supplying configuration
+strings does not make an unimplemented backend ready. No simulated backend is
+included in the production binary.
 
 Run locally with `go run ./cmd/atg-control`. `GET /health/live` reports process
 liveness; `GET /health/ready` reports runtime dependency initialization and returns
@@ -25,11 +25,17 @@ repository commands in its own process.
 
 The `internal/provider` package defines the normalized provider boundary, and
 `internal/store/postgres` contains the durable ledger/migration implementation.
-The controller and repository are not yet wired into the executable's HTTP
-composition; PostgreSQL integration tests run when `ATG_TEST_DATABASE_URL` is set.
-`internal/testkit` contains only deterministic development/test substitutes; the
-production executable does not import or select them. S3-compatible storage,
-HTTP task operations and a real provider adapter are added in later steps.
+The HTTP component defines `POST /execution-pairs`, `GET /execution-pairs/{id}`,
+`GET /executions/{id}`, and revision-checked `POST /execution-pairs/{id}/cancel`.
+Creation accepts run/generation/profile/selection references only; an injected
+resolver must produce matching approved task specifications. Authentication,
+authorization, resolution, and audit are required ports, and unconfigured
+operations return 503. The executable deliberately wires none of these adapters
+until their production implementations are selected. PostgreSQL integration tests
+run when `ATG_TEST_DATABASE_URL` is set. `internal/testkit` contains only
+deterministic development/test substitutes; the production executable does not
+import or select them. S3-compatible storage and a real provider adapter remain
+open.
 See `docs/architecture/flpath-5048-runtime.md` for the selected boundary.
 
 `internal/materialization` reconstructs the approved generated-test files only

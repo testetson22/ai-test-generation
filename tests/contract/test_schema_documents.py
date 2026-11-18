@@ -27,6 +27,11 @@ EXPECTED = {
     "execution-task",
     "execution-attempt",
     "execution-result",
+    "execution-pair-request",
+    "execution-cancel-request",
+    "execution-task-view",
+    "execution-pair-view",
+    "execution-error",
     "provider-observation",
     "quality",
     "provenance",
@@ -82,6 +87,11 @@ class ContractSchemaTests(unittest.TestCase):
             "execution-task.json": "execution-task",
             "execution-attempt.json": "execution-attempt",
             "execution-result.json": "execution-result",
+            "execution-pair-request.json": "execution-pair-request",
+            "execution-cancel-request.json": "execution-cancel-request",
+            "execution-task-view.json": "execution-task-view",
+            "execution-pair-view.json": "execution-pair-view",
+            "execution-error.json": "execution-error",
             "provider-observation.json": "provider-observation",
             "quality.json": "quality",
             "provenance.json": "provenance",
@@ -362,11 +372,10 @@ class ContractSchemaTests(unittest.TestCase):
                 Draft202012Validator.check_schema(schema)
 
     def test_every_schema_reference_resolves(self):
-        common = json.loads((CONTRACTS / "common.schema.json").read_text())
-        store = {common["$id"]: common}
-        for path in CONTRACTS.glob("*.schema.json"):
+        schemas = [(path, json.loads(path.read_text())) for path in sorted(CONTRACTS.glob("*.schema.json"))]
+        store = {schema["$id"]: schema for _, schema in schemas}
+        for path, schema in schemas:
             with self.subTest(schema=path.name):
-                schema = json.loads(path.read_text())
                 resolver = RefResolver.from_schema(schema, store=store)
                 for reference in _references(schema):
                     resolver.resolve(reference)
@@ -378,10 +387,14 @@ class ContractSchemaTests(unittest.TestCase):
 
     @staticmethod
     def _validator(name):
-        root = pathlib.Path(__file__).parents[2] / "contracts" / "v1"
-        common = json.loads((root / "common.schema.json").read_text())
-        schema = json.loads((root / f"{name}.schema.json").read_text())
-        registry = Registry().with_resource(common["$id"], Resource.from_contents(common))
+        schemas = {
+            path.stem.removesuffix(".schema"): json.loads(path.read_text())
+            for path in CONTRACTS.glob("*.schema.json")
+        }
+        schema = schemas[name]
+        registry = Registry()
+        for document in schemas.values():
+            registry = registry.with_resource(document["$id"], Resource.from_contents(document))
         return Draft202012Validator(schema, registry=registry, format_checker=FormatChecker())
 
 

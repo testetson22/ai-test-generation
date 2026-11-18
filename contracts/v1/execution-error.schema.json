@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-error.schema.json",
+  "title": "ATG execution API error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "code", "message"],
+  "properties": {
+    "contract": { "const": "atg.execution_error" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "code": { "$ref": "common.schema.json#/$defs/id" },
+    "message": { "type": "string", "minLength": 1 }
+  }
+}

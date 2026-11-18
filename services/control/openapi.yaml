@@ -1,0 +1,208 @@
+openapi: 3.1.0
+info:
+  title: ATG Execution Control API
+  version: 1.0.0
+  description: >-
+    Asynchronous execution coordination. Authentication and authorization are
+    supplied by injected adapters; no worker command or result is accepted from
+    these routes.
+paths:
+  /execution-pairs:
+    post:
+      operationId: createExecutionPair
+      x-authentication-required: true
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../contracts/v1/execution-pair-request.schema.json
+      responses:
+        "201":
+          description: Pair durably created
+          headers:
+            Location:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-pair-view.schema.json
+        "200":
+          description: Idempotent replay of an existing pair
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-pair-view.schema.json
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "422":
+          $ref: "#/components/responses/InvalidReference"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /execution-pairs/{pairID}:
+    get:
+      operationId: getExecutionPair
+      x-authentication-required: true
+      parameters:
+        - $ref: "#/components/parameters/PairID"
+      responses:
+        "200":
+          description: Pair progress and task references
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-pair-view.schema.json
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /executions/{taskID}:
+    get:
+      operationId: getExecutionTask
+      x-authentication-required: true
+      parameters:
+        - $ref: "#/components/parameters/TaskID"
+      responses:
+        "200":
+          description: Task progress and stable artifact references
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-task-view.schema.json
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /execution-pairs/{pairID}/cancel:
+    post:
+      operationId: cancelExecutionPair
+      x-authentication-required: true
+      parameters:
+        - $ref: "#/components/parameters/PairID"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: ../../contracts/v1/execution-cancel-request.schema.json
+      responses:
+        "200":
+          description: Both tasks are already terminal or were not reached
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-pair-view.schema.json
+        "202":
+          description: Cancellation was durably requested for both tasks
+          content:
+            application/json:
+              schema:
+                $ref: ../../contracts/v1/execution-pair-view.schema.json
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/TooLarge"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+components:
+  parameters:
+    PairID:
+      in: path
+      name: pairID
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+    TaskID:
+      in: path
+      name: taskID
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
+  responses:
+    BadRequest:
+      description: Invalid request envelope or body
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    Unauthorized:
+      description: Authentication is required
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    Forbidden:
+      description: Operation is not authorized
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    NotFound:
+      description: Execution resource or approved reference was not found
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    Conflict:
+      description: Idempotency or revision conflict
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    TooLarge:
+      description: Request body exceeds the 16 KiB limit
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    InvalidReference:
+      description: Approved references did not resolve to a valid pair
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json
+    Unavailable:
+      description: A required backend or authorization adapter is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: ../../contracts/v1/execution-error.schema.json

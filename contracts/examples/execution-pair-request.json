@@ -1,0 +1,11 @@
+{
+  "contract": "atg.execution_pair_request",
+  "version": "1.0",
+  "run_id": "fixture-run-1",
+  "expected_run_revision": 12,
+  "generation_id": "fixture-generation-1",
+  "profile_id": "fixture-spring-profile",
+  "profile_version": "1.0.0",
+  "selection_id": "fixture-focused-selection",
+  "comparison_mode": "same_subject_control"
+}

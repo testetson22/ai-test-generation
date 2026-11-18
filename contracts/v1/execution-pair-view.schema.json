@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-pair-view.schema.json",
+  "title": "ATG execution pair API view",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "pair_id", "run_id", "generation_id", "request_digest", "base_task", "candidate_task", "created_at"],
+  "properties": {
+    "contract": { "const": "atg.execution_pair_view" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "pair_id": { "$ref": "common.schema.json#/$defs/id" },
+    "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "generation_id": { "$ref": "common.schema.json#/$defs/id" },
+    "request_digest": { "$ref": "common.schema.json#/$defs/payload_digest" },
+    "base_task": { "$ref": "execution-task-view.schema.json" },
+    "candidate_task": { "$ref": "execution-task-view.schema.json" },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  }
+}

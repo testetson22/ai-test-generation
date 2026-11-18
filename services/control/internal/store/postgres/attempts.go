@@ -549,36 +549,116 @@ func (s *Store) RequestCancel(ctx context.Context, taskID string, expectedRevisi
 	if err != nil {
 		return execution.TaskRecord{}, fmt.Errorf("lock task for cancellation: %w", err)
 	}
-	if task.Revision != expectedRevision {
-		return execution.TaskRecord{}, execution.ErrStaleRevision
+	repeated, err := cancellationReplay(ctx, tx, task, expectedRevision)
+	if err != nil {
+		return execution.TaskRecord{}, err
 	}
-	if terminalTask(task.Status) {
-		return task, tx.Commit()
+	if repeated {
+		if err := tx.Commit(); err != nil {
+			return execution.TaskRecord{}, fmt.Errorf("commit idempotent cancellation read: %w", err)
+		}
+		return task, nil
+	}
+	updated, err := requestTaskCancellation(ctx, tx, task, now)
+	if err != nil {
+		return execution.TaskRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return execution.TaskRecord{}, fmt.Errorf("commit task cancellation: %w", err)
+	}
+	return updated, nil
+}
+
+func (s *Store) RequestCancelPair(ctx context.Context, pairID string, baseExpectedRevision, candidateExpectedRevision int64, now time.Time) (execution.PairRecord, execution.TaskRecord, execution.TaskRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, fmt.Errorf("begin pair cancellation: %w", err)
+	}
+	defer tx.Rollback()
+	pair, err := scanPair(tx.QueryRowContext(ctx, `
+		SELECT pair_id, run_id, generation_id, base_task_id, candidate_task_id, request_digest, created_at
+		FROM execution_pairs WHERE pair_id = $1 FOR UPDATE`, pairID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, execution.ErrPairNotFound
+	}
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, fmt.Errorf("lock pair for cancellation: %w", err)
+	}
+	base, err := scanTask(tx.QueryRowContext(ctx, taskSelect+` WHERE task_id = $1 FOR UPDATE`, pair.BaseTaskID))
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, fmt.Errorf("lock base task for pair cancellation: %w", err)
+	}
+	candidate, err := scanTask(tx.QueryRowContext(ctx, taskSelect+` WHERE task_id = $1 FOR UPDATE`, pair.CandidateTaskID))
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, fmt.Errorf("lock candidate task for pair cancellation: %w", err)
+	}
+	if base.PairID != pair.PairID || base.SubjectRole != "base" || candidate.PairID != pair.PairID || candidate.SubjectRole != "candidate" {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, execution.ErrStoredTaskCorrupt
+	}
+	baseReplay, err := cancellationReplay(ctx, tx, base, baseExpectedRevision)
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, err
+	}
+	candidateReplay, err := cancellationReplay(ctx, tx, candidate, candidateExpectedRevision)
+	if err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, err
+	}
+	if !baseReplay {
+		base, err = requestTaskCancellation(ctx, tx, base, now)
+		if err != nil {
+			return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, err
+		}
+	}
+	if !candidateReplay {
+		candidate, err = requestTaskCancellation(ctx, tx, candidate, now)
+		if err != nil {
+			return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return execution.PairRecord{}, execution.TaskRecord{}, execution.TaskRecord{}, fmt.Errorf("commit pair cancellation: %w", err)
+	}
+	return pair, base, candidate, nil
+}
+
+func cancellationReplay(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, expectedRevision int64) (bool, error) {
+	if task.Revision == expectedRevision {
+		return false, nil
+	}
+	var repeated bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM execution_task_events
+		WHERE task_id = $1 AND expected_revision = $2 AND event_type = 'cancellation_requested'
+	)`, task.TaskID, expectedRevision).Scan(&repeated); err != nil {
+		return false, fmt.Errorf("check idempotent task cancellation: %w", err)
+	}
+	if !repeated {
+		return false, execution.ErrStaleRevision
+	}
+	return true, nil
+}
+
+func requestTaskCancellation(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, now time.Time) (execution.TaskRecord, error) {
+	if terminalTask(task.Status) || task.Status == "cancel_requested" {
+		return task, nil
 	}
 	status := "cancel_requested"
-	next := now.UTC()
 	reason := "cancellation requested"
 	if task.ActiveAttemptID == "" {
 		status = "not_reached"
 		reason = "cancelled before any worker attempt was launched"
+	} else if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET next_action_at = $2, updated_at = $2 WHERE attempt_id = $1`, task.ActiveAttemptID, now.UTC()); err != nil {
+		return execution.TaskRecord{}, fmt.Errorf("schedule provider cancellation: %w", err)
 	}
-	if task.ActiveAttemptID != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET next_action_at = $2, updated_at = $2 WHERE attempt_id = $1`, task.ActiveAttemptID, now.UTC()); err != nil {
-			return execution.TaskRecord{}, fmt.Errorf("schedule provider cancellation: %w", err)
-		}
-	}
-	if err := transitionTask(ctx, tx, task, status, reason, now, next, "cancellation_requested", map[string]any{"active_attempt_id": task.ActiveAttemptID}); err != nil {
+	if err := transitionTask(ctx, tx, task, status, reason, now, now.UTC(), "cancellation_requested", map[string]any{"active_attempt_id": task.ActiveAttemptID}); err != nil {
 		return execution.TaskRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET cancel_requested_at = $2 WHERE task_id = $1`, taskID, now.UTC()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET cancel_requested_at = $2 WHERE task_id = $1`, task.TaskID, now.UTC()); err != nil {
 		return execution.TaskRecord{}, fmt.Errorf("record cancellation timestamp: %w", err)
 	}
-	updated, err := scanTask(tx.QueryRowContext(ctx, taskSelect+` WHERE task_id = $1`, taskID))
+	updated, err := scanTask(tx.QueryRowContext(ctx, taskSelect+` WHERE task_id = $1`, task.TaskID))
 	if err != nil {
 		return execution.TaskRecord{}, fmt.Errorf("read cancelled task: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return execution.TaskRecord{}, fmt.Errorf("commit task cancellation: %w", err)
 	}
 	return updated, nil
 }

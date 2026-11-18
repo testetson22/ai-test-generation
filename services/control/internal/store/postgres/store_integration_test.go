@@ -29,8 +29,13 @@ func TestPostgresPairCreationClaimFencingAndObservationOrdering(t *testing.T) {
 		t.Fatalf("create pair = %#v, created %t, err %v", pair, created, err)
 	}
 	cleanupPair(t, store, pair.PairID)
-	if _, err := store.RequestCancel(ctx, pair.CandidateTaskID, 1, now); err != nil {
+	cancelled, err := store.RequestCancel(ctx, pair.CandidateTaskID, 1, now)
+	if err != nil {
 		t.Fatalf("defer unused candidate task: %v", err)
+	}
+	repeatedCancellation, err := store.RequestCancel(ctx, pair.CandidateTaskID, 1, now.Add(time.Second))
+	if err != nil || repeatedCancellation.Revision != cancelled.Revision || repeatedCancellation.Status != cancelled.Status {
+		t.Fatalf("repeat cancellation = %#v, err %v; want original durable cancellation", repeatedCancellation, err)
 	}
 	duplicate, created, err := store.CreatePair(ctx, input)
 	if err != nil || created || duplicate.PairID != pair.PairID {
@@ -134,6 +139,33 @@ func TestPostgresPairCreationClaimFencingAndObservationOrdering(t *testing.T) {
 	baseTask, err = store.GetTask(ctx, pair.BaseTaskID)
 	if err != nil || baseTask.Status != "collecting" {
 		t.Fatalf("completed operational task = %#v, err %v; want collecting, not passing", baseTask, err)
+	}
+}
+
+func TestPostgresPairCancellationIsAtomicAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := integrationStore(t)
+	now := time.Now().UTC()
+	pair, created, err := store.CreatePair(ctx, pairInput(t, now, "same_subject_control", []string{}))
+	if err != nil || !created {
+		t.Fatalf("create pair = %#v, created %v, err %v", pair, created, err)
+	}
+	cleanupPair(t, store, pair.PairID)
+	if _, _, _, err := store.RequestCancelPair(ctx, pair.PairID, 1, 2, now); !errors.Is(err, execution.ErrStaleRevision) {
+		t.Fatalf("partial stale cancellation error = %v", err)
+	}
+	base, err := store.GetTask(ctx, pair.BaseTaskID)
+	if err != nil || base.Status != "queued" || base.Revision != 1 {
+		t.Fatalf("base task changed after rejected pair cancellation: %#v, err %v", base, err)
+	}
+
+	_, base, candidate, err := store.RequestCancelPair(ctx, pair.PairID, 1, 1, now)
+	if err != nil || base.Status != "not_reached" || candidate.Status != "not_reached" || base.Revision != 2 || candidate.Revision != 2 {
+		t.Fatalf("pair cancellation = base %#v candidate %#v err %v", base, candidate, err)
+	}
+	_, repeatedBase, repeatedCandidate, err := store.RequestCancelPair(ctx, pair.PairID, 1, 1, now.Add(time.Second))
+	if err != nil || repeatedBase.Revision != base.Revision || repeatedCandidate.Revision != candidate.Revision {
+		t.Fatalf("idempotent pair cancellation = base %#v candidate %#v err %v", repeatedBase, repeatedCandidate, err)
 	}
 }
 

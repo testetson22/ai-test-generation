@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-pair-request.schema.json",
+  "title": "ATG execution pair creation request",
+  "description": "References only. An authenticated resolver supplies canonical approved task specifications.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "run_id", "expected_run_revision", "generation_id", "profile_id", "profile_version", "selection_id", "comparison_mode"],
+  "properties": {
+    "contract": { "const": "atg.execution_pair_request" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "expected_run_revision": { "type": "integer", "minimum": 1 },
+    "generation_id": { "$ref": "common.schema.json#/$defs/id" },
+    "profile_id": { "$ref": "common.schema.json#/$defs/id" },
+    "profile_version": { "type": "string", "maxLength": 64, "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "selection_id": { "$ref": "common.schema.json#/$defs/id" },
+    "comparison_mode": { "enum": ["same_subject_control", "differential"] }
+  }
+}

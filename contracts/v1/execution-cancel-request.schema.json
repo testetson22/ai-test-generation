@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-cancel-request.schema.json",
+  "title": "ATG execution cancellation request",
+  "description": "A revision-checked request to cancel one durable execution task.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "expected_base_task_revision", "expected_candidate_task_revision"],
+  "properties": {
+    "contract": { "const": "atg.execution_cancel_request" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "expected_base_task_revision": { "type": "integer", "minimum": 1 },
+    "expected_candidate_task_revision": { "type": "integer", "minimum": 1 }
+  }
+}

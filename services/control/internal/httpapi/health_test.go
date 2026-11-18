@@ -43,7 +43,7 @@ func TestReadinessFailsClosedForUnconfiguredDependencies(t *testing.T) {
 	if body.Status != "not_ready" {
 		t.Fatalf("readiness status = %q, want not_ready", body.Status)
 	}
-	for _, name := range []string{"postgres", "artifact_store", "provider"} {
+	for _, name := range []string{"postgres", "artifact_store", "provider", "execution_api"} {
 		if body.Checks[name] != "unconfigured" {
 			t.Errorf("check %q = %q, want unconfigured", name, body.Checks[name])
 		}
@@ -55,9 +55,10 @@ func TestReadinessRequiresEveryDependency(t *testing.T) {
 		name string
 		deps Dependencies
 	}{
-		{name: "missing postgres", deps: Dependencies{ArtifactStore: true, Provider: true}},
-		{name: "missing artifact store", deps: Dependencies{Postgres: true, Provider: true}},
-		{name: "missing provider", deps: Dependencies{Postgres: true, ArtifactStore: true}},
+		{name: "missing postgres", deps: Dependencies{ArtifactStore: true, Provider: true, Execution: readyExecutionAPI()}},
+		{name: "missing artifact store", deps: Dependencies{Postgres: true, Provider: true, Execution: readyExecutionAPI()}},
+		{name: "missing provider", deps: Dependencies{Postgres: true, ArtifactStore: true, Execution: readyExecutionAPI()}},
+		{name: "missing execution API adapters", deps: Dependencies{Postgres: true, ArtifactStore: true, Provider: true}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -72,7 +73,7 @@ func TestReadinessRequiresEveryDependency(t *testing.T) {
 
 func TestReadinessSucceedsOnlyWhenEveryDependencyIsReady(t *testing.T) {
 	response := httptest.NewRecorder()
-	NewHandler(Dependencies{Postgres: true, ArtifactStore: true, Provider: true}).ServeHTTP(
+	NewHandler(Dependencies{Postgres: true, ArtifactStore: true, Provider: true, Execution: readyExecutionAPI()}).ServeHTTP(
 		response,
 		httptest.NewRequest(http.MethodGet, "/health/ready", nil),
 	)

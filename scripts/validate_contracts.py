@@ -27,6 +27,11 @@ EXAMPLES = {
     "execution-task-spec": "execution-task-spec.json",
     "execution-task": "execution-task.json",
     "execution-attempt": "execution-attempt.json",
+    "execution-pair-request": "execution-pair-request.json",
+    "execution-cancel-request": "execution-cancel-request.json",
+    "execution-task-view": "execution-task-view.json",
+    "execution-pair-view": "execution-pair-view.json",
+    "execution-error": "execution-error.json",
     "provider-observation": "provider-observation.json",
     "quality": "quality.json",
     "provenance": "provenance.json",
@@ -50,8 +55,9 @@ def load_schema_documents(schema_root: Path, override_root: Path | None = None) 
 
 
 def validator_for(name: str, schemas: Mapping[str, dict]) -> Draft202012Validator:
-    common = schemas["common"]
-    registry = Registry().with_resource(common["$id"], Resource.from_contents(common))
+    registry = Registry()
+    for schema in schemas.values():
+        registry = registry.with_resource(schema["$id"], Resource.from_contents(schema))
     return Draft202012Validator(
         schemas[name], registry=registry, format_checker=FormatChecker()
     )

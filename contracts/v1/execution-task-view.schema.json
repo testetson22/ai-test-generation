@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/execution-task-view.schema.json",
+  "title": "ATG execution task API view",
+  "description": "Progress and stable references only; this view does not assert test success.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract", "version", "task_id", "run_id", "pair_id", "subject_role", "specification", "status", "revision", "attempt_count", "created_at", "updated_at"],
+  "properties": {
+    "contract": { "const": "atg.execution_task_view" },
+    "version": { "$ref": "common.schema.json#/$defs/contract_version" },
+    "task_id": { "$ref": "common.schema.json#/$defs/id" },
+    "run_id": { "$ref": "common.schema.json#/$defs/id" },
+    "pair_id": { "$ref": "common.schema.json#/$defs/id" },
+    "subject_role": { "enum": ["base", "candidate"] },
+    "specification": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/artifact" },
+        { "properties": { "media_type": { "const": "application/vnd.atg.execution-task-spec+json" } } }
+      ]
+    },
+    "status": { "enum": ["queued", "eligible", "dispatching", "submitted", "running", "collecting", "completed", "failed", "blocked", "not_reached", "cancel_requested", "cancelled", "outcome_unknown", "superseded"] },
+    "revision": { "type": "integer", "minimum": 1 },
+    "attempt_count": { "type": "integer", "minimum": 0 },
+    "active_attempt_id": { "$ref": "common.schema.json#/$defs/id" },
+    "execution_result": {
+      "allOf": [
+        { "$ref": "common.schema.json#/$defs/artifact" },
+        { "properties": { "media_type": { "const": "application/vnd.atg.execution-result+json" } } }
+      ]
+    },
+    "terminal_reason": { "type": "string", "minLength": 1 },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+  }
+}
