@@ -125,7 +125,7 @@ func (s *Store) GetTask(ctx context.Context, taskID string) (execution.TaskRecor
 const taskSelect = `
 	SELECT task_id, run_id, pair_id, subject_role, specification_bytes, specification_digest,
 	       status, revision, attempt_count, COALESCE(active_attempt_id, ''), next_action_at,
-	       COALESCE(terminal_reason, ''), COALESCE(execution_result_bytes, ''::bytea), created_at, updated_at
+	       COALESCE(terminal_reason, ''), COALESCE(execution_result_bytes, ''::bytea), created_at, updated_at, cancel_requested_at
 	FROM execution_tasks`
 
 type rowScanner interface {
@@ -144,7 +144,7 @@ func scanTask(row rowScanner) (execution.TaskRecord, error) {
 	err := row.Scan(
 		&task.TaskID, &task.RunID, &task.PairID, &task.SubjectRole, &task.Specification,
 		&task.SpecificationDigest, &task.Status, &task.Revision, &task.AttemptCount,
-		&task.ActiveAttemptID, &task.NextActionAt, &task.TerminalReason, &resultBytes, &task.CreatedAt, &task.UpdatedAt,
+		&task.ActiveAttemptID, &task.NextActionAt, &task.TerminalReason, &resultBytes, &task.CreatedAt, &task.UpdatedAt, &task.CancelRequestedAt,
 	)
 	if err == nil && execution.DigestTaskSpec(task.Specification) != task.SpecificationDigest {
 		return execution.TaskRecord{}, execution.ErrStoredTaskCorrupt

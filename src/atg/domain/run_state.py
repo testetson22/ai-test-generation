@@ -252,7 +252,7 @@ class RunState:
         validate_identifier(run_id, "run_id")
         return cls(run_id=run_id)
 
-    def apply(self, event: RunEvent) -> TransitionResult:
+    def apply(self, event: RunEvent, *, _replay: bool = False) -> TransitionResult:
         """Apply an event, treating exact retries as idempotent no-ops."""
 
         if event.run_id != self.run_id:
@@ -274,6 +274,22 @@ class RunState:
         retrying = event.event_type == "retry_requested" and self.status in {"blocked", "rejected", "inconclusive"} and not self.admission_blocked
         if self.status in self._TERMINAL and not retrying:
             raise InvalidTransitionError(f"run is terminal: {self.status}")
+
+        # Historical journals remain replayable, but generic commands cannot
+        # stand in for the execution ledger or its accepted result evidence.
+        if not _replay and (
+            event.event_type in {"execution_started", "execution_completed", "quality_passed"}
+            or (
+                event.event_type == "checkpoint_created"
+                and event.checkpoint_kind in {"execution_review", "quality_review"}
+            )
+            or (
+                event.event_type == "decision_recorded"
+                and self.status in {"execution_review", "quality_review"}
+                and event.decision == "approved"
+            )
+        ):
+            raise InvalidTransitionError("execution advancement requires the durable execution controller")
 
         if event.event_type == "checkpoint_created":
             next_state = self._create_checkpoint(event)

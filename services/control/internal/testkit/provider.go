@@ -68,10 +68,13 @@ func (p *StatefulProvider) Submit(ctx context.Context, request provider.SubmitRe
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if existing, ok := p.jobs[request.SubmissionToken]; ok {
-		if existing.request != request {
+		if !existing.request.SameAttempt(request) || request.KnownJob.ID != "" && existing.observation.Job != request.KnownJob {
 			return provider.JobRef{}, provider.ErrAttemptConflict
 		}
 		return existing.observation.Job, nil
+	}
+	if request.KnownJob.ID != "" {
+		return provider.JobRef{}, provider.ErrAttemptNotFound
 	}
 
 	p.launchCount++
@@ -107,9 +110,9 @@ func (p *StatefulProvider) Observe(ctx context.Context, request provider.SubmitR
 	defer p.mu.Unlock()
 	job, ok := p.jobs[request.SubmissionToken]
 	if !ok {
-		return observationForRequest(request, provider.Observation{Status: provider.StatusNotFound, Sequence: 1, ObservedAt: p.clock.Now()}), nil
+		return observationForRequest(request, provider.Observation{Job: request.KnownJob, Status: provider.StatusNotFound, Sequence: 1, ObservedAt: p.clock.Now()}), nil
 	}
-	if job.request != request {
+	if !job.request.SameAttempt(request) || request.KnownJob.ID != "" && job.observation.Job != request.KnownJob {
 		return provider.Observation{}, provider.ErrAttemptConflict
 	}
 	return job.observation, nil
@@ -128,7 +131,7 @@ func (p *StatefulProvider) Cancel(ctx context.Context, request provider.SubmitRe
 	if !ok {
 		return provider.Observation{}, provider.ErrAttemptNotFound
 	}
-	if job.request != request {
+	if !job.request.SameAttempt(request) || request.KnownJob.ID != "" && job.observation.Job != request.KnownJob {
 		return provider.Observation{}, provider.ErrAttemptConflict
 	}
 	if job.observation.Status == provider.StatusCancelled || job.observation.Status == provider.StatusCompleted || job.observation.Status == provider.StatusFailed {
@@ -157,7 +160,7 @@ func (p *StatefulProvider) Cleanup(ctx context.Context, request provider.SubmitR
 	if !ok {
 		return provider.ErrAttemptNotFound
 	}
-	if job.request != request {
+	if !job.request.SameAttempt(request) || request.KnownJob.ID != "" && job.observation.Job != request.KnownJob {
 		return provider.ErrAttemptConflict
 	}
 	if p.failNextCleanup {

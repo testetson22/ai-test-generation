@@ -54,7 +54,11 @@ artifact and approval digests but does not authenticate the reviewer or execute
 profile commands; those require the approved authorization and worker adapters.
 `internal/evidence.Publisher` verifies stored evidence bytes, records a provisional
 result before cleanup, then publishes and records a final result only after cleanup
-and termination are known. The PostgreSQL ledger binds both result deliveries to
-the expected task revisions. `execution-result.schema.json` describes operational
+and termination are known. The PostgreSQL ledger binds both deliveries to their
+attempt and expected task revision, retaining earlier attempts' evidence across
+retries without overwriting the current task's result. Migration
+`0002_attempt_results.sql` backfills existing deliveries and recorded termination
+proof; the initial migration remains unchanged. `execution-result.schema.json`
+describes operational
 evidence and does not claim test pass; no application-specific commands or worker
 platform are selected by these framework-neutral components.

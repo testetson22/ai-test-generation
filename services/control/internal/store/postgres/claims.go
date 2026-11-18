@@ -95,7 +95,7 @@ func (s *Store) ClaimNext(ctx context.Context, holder string, providerID provide
 		claim.ProviderJob = provider.JobRef{ID: active.providerJobID}
 	}
 	switch {
-	case active.task.Status == "cancel_requested" || active.attemptStatus == "cancel_requested":
+	case active.task.CancelRequestedAt != nil || active.task.Status == "cancel_requested" || active.attemptStatus == "cancel_requested":
 		claim.Action = execution.ActionCancel
 	case active.attemptStatus == "prepared":
 		claim.Action = execution.ActionSubmit
@@ -134,6 +134,7 @@ func expireActiveTask(ctx context.Context, tx *sql.Tx, task *execution.TaskRecor
 		return fmt.Errorf("schedule deadline cancellation: %w", err)
 	}
 	task.Status = "cancel_requested"
+	task.CancelRequestedAt = &now
 	task.Revision++
 	task.TerminalReason = "execution deadline elapsed"
 	return nil
@@ -151,7 +152,7 @@ func selectDueAttempt(ctx context.Context, tx *sql.Tx, now time.Time) (dueAttemp
 		SELECT t.task_id, t.run_id, t.pair_id, t.subject_role, t.specification_bytes,
 		       t.specification_digest, t.status, t.revision, t.attempt_count,
 		       COALESCE(t.active_attempt_id, ''), t.next_action_at, COALESCE(t.terminal_reason, ''),
-		       t.created_at, t.updated_at,
+		       t.created_at, t.updated_at, t.cancel_requested_at,
 		       a.attempt_id, a.attempt_number, a.task_spec_digest, a.submission_token, a.status,
 		       a.provider_id, a.provider_identity_bytes, COALESCE(a.provider_job_id, ''), a.fencing_token,
 		       COALESCE(a.retry_authorization_bytes, ''::bytea),
@@ -164,7 +165,8 @@ func selectDueAttempt(ctx context.Context, tx *sql.Tx, now time.Time) (dueAttemp
 			ORDER BY sequence DESC LIMIT 1
 		) o ON TRUE
 		WHERE t.status NOT IN ('completed', 'failed', 'blocked', 'not_reached', 'cancelled', 'superseded')
-		  AND a.status IN ('prepared', 'submission_unknown', 'submitted', 'running', 'outcome_unknown', 'cancel_requested')
+		  AND (a.status IN ('prepared', 'submission_unknown', 'submitted', 'running', 'outcome_unknown', 'cancel_requested')
+		       OR (t.status = 'cancel_requested' AND a.status IN ('completed', 'failed')))
 		  AND a.next_action_at <= $1
 		  AND (a.lease_expires_at IS NULL OR a.lease_expires_at <= $1)
 		ORDER BY a.next_action_at, a.created_at
@@ -174,7 +176,7 @@ func selectDueAttempt(ctx context.Context, tx *sql.Tx, now time.Time) (dueAttemp
 		&active.task.TaskID, &active.task.RunID, &active.task.PairID, &active.task.SubjectRole,
 		&active.task.Specification, &active.task.SpecificationDigest, &active.task.Status,
 		&active.task.Revision, &active.task.AttemptCount, &active.task.ActiveAttemptID,
-		&active.task.NextActionAt, &active.task.TerminalReason, &active.task.CreatedAt, &active.task.UpdatedAt,
+		&active.task.NextActionAt, &active.task.TerminalReason, &active.task.CreatedAt, &active.task.UpdatedAt, &active.task.CancelRequestedAt,
 		&active.attemptID, &active.attemptNumber, &active.attemptSpecDigest, &active.submissionToken, &active.attemptStatus,
 		&active.providerID, &active.providerIdentity, &active.providerJobID, &active.fencingToken,
 		&active.retryAuthorization, &active.latestObservation,
@@ -183,6 +185,12 @@ func selectDueAttempt(ctx context.Context, tx *sql.Tx, now time.Time) (dueAttemp
 }
 
 func (s *Store) createFirstOrRetryAttempt(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, holder string, providerID provider.Identity, now time.Time, leaseDuration, pollInterval time.Duration) (*execution.Claim, error) {
+	if task.CancelRequestedAt != nil {
+		if err := transitionTask(ctx, tx, task, "not_reached", "cancelled before dispatch", now, now, "dispatch_cancelled", nil); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 	var retryAuthorization *execution.RetryAuthorization
 	attemptNumber := task.AttemptCount + 1
 	if task.AttemptCount > 0 {
@@ -256,7 +264,7 @@ func (s *Store) createFirstOrRetryAttempt(ctx context.Context, tx *sql.Tx, task 
 	newStatus := "dispatching"
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE execution_tasks SET status = $2, revision = revision + 1, attempt_count = $3,
-		       active_attempt_id = $4, next_action_at = $5, updated_at = $6
+		       active_attempt_id = $4, next_action_at = $5, updated_at = $6, execution_result_bytes = NULL
 		WHERE task_id = $1`, task.TaskID, newStatus, attemptNumber, attemptID, now.Add(pollInterval), now.UTC()); err != nil {
 		return nil, fmt.Errorf("activate execution attempt: %w", err)
 	}

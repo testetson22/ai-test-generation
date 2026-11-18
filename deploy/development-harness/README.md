@@ -179,3 +179,7 @@ PYTHONPATH=src python3 -m atg.component.run_state_server --database /tmp/atg.sql
 It exposes `POST /runs`, `POST /runs/{run_id}/events`, `GET /runs/{run_id}`,
 and `GET /runs/{run_id}/events`. Component tests use this process boundary to
 verify persistence and replay behavior; it is not the production deployment.
+New generic execution/quality advancement is intentionally rejected until a
+trusted execution-ledger bridge is available. Existing historical journals can
+still be replayed, but replay does not make their old checkpoint transitions
+available to new event submissions.

@@ -9,6 +9,11 @@ from referencing import Registry, Resource
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "src"))
 from atg.domain.run_state import RunEvent, RunState  # noqa: E402
+from atg.domain.schema_validation import (  # noqa: E402
+    ContractValidationError,
+    validate_contract_document,
+    validate_contract_fragment,
+)
 
 
 CONTRACTS = pathlib.Path(__file__).parents[2] / "contracts" / "v1"
@@ -104,6 +109,7 @@ class ContractSchemaTests(unittest.TestCase):
         for filename, schema_name in examples.items():
             with self.subTest(filename=filename):
                 self._validator(schema_name).validate(self._load("examples", filename))
+                validate_contract_document(self._load("examples", filename), schema_name)
         self._validator("compatibility").validate(self._load("compatibility", "v1-run-state.json"))
 
     def test_invalid_event_fixture_is_rejected_by_event_schema(self):
@@ -121,6 +127,23 @@ class ContractSchemaTests(unittest.TestCase):
             self._validator("provider-observation").validate(
                 self._load("invalid", "provider-observation-cancel-unconfirmed.json")
             )
+        observation = self._load("examples", "provider-observation.json")
+        observation["status"] = "cancelled"
+        observation.pop("termination_confirmed", None)
+        with self.assertRaises(ContractValidationError):
+            validate_contract_document(observation, "provider-observation")
+        observation["termination_confirmed"] = True
+        validate_contract_document(observation, "provider-observation")
+
+    def test_runtime_validator_resolves_and_enforces_sibling_schema_references(self):
+        pair = self._load("examples", "execution-pair-view.json")
+        validate_contract_document(pair, "execution-pair-view")
+        validate_contract_fragment(pair["base_task"], "execution-pair-view", ("properties", "base_task"))
+        pair["base_task"]["attempt_count"] = -1
+        with self.assertRaises(ContractValidationError):
+            validate_contract_document(pair, "execution-pair-view")
+        with self.assertRaises(ContractValidationError):
+            validate_contract_fragment(pair["base_task"], "execution-pair-view", ("properties", "base_task"))
 
     def test_execution_profile_requires_pinned_image_and_bounded_commands(self):
         validator = self._validator("execution-profile")

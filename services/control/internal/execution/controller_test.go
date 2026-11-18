@@ -67,6 +67,47 @@ func TestControllerPassesAttemptAndApprovedProfileIdentityToProvider(t *testing.
 	}
 }
 
+func TestControllerPassesPersistedJobBeforeProviderReconciliation(t *testing.T) {
+	for _, action := range []ClaimAction{ActionObserve, ActionCancel} {
+		t.Run(string(action), func(t *testing.T) {
+			controller, repository, executionProvider, now := newControllerHarness(t, action)
+			repository.claim.ProviderJob = provider.JobRef{ID: "ns/run:original-uid"}
+			executionProvider.observation = provider.Observation{
+				SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+				TaskSpecDigest: repository.claim.TaskSpecDigest, ProfileID: "profile-1", ProfileVersion: "1.0.0",
+				ProfileDigest: validTaskSpec().Profile.Artifact.Digest, Job: repository.claim.ProviderJob,
+				Status: provider.StatusRunning, ObservedAt: now,
+			}
+			worked, err := controller.ProcessNext(context.Background(), "restarted-controller")
+			if !worked || err != nil || repository.observationCalls != 1 {
+				t.Fatalf("reconciliation: worked=%t err=%v observations=%d", worked, err, repository.observationCalls)
+			}
+			request := executionProvider.observeRequest
+			if action == ActionCancel {
+				request = executionProvider.cancelRequest
+			}
+			if request.KnownJob != repository.claim.ProviderJob {
+				t.Fatalf("provider operation did not receive persisted job: request=%#v claim=%#v", request, repository.claim)
+			}
+		})
+	}
+}
+
+func TestControllerRejectsObservationForReplacementKnownJob(t *testing.T) {
+	controller, repository, executionProvider, now := newControllerHarness(t, ActionObserve)
+	repository.claim.ProviderJob = provider.JobRef{ID: "ns/run:original-uid"}
+	executionProvider.observation = provider.Observation{
+		SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+		TaskSpecDigest: repository.claim.TaskSpecDigest, ProfileID: "profile-1", ProfileVersion: "1.0.0",
+		ProfileDigest: validTaskSpec().Profile.Artifact.Digest, Job: provider.JobRef{ID: "ns/run:replacement-uid"},
+		Status: provider.StatusCompleted, TerminationConfirmed: true, ObservedAt: now,
+	}
+	worked, err := controller.ProcessNext(context.Background(), "controller-1")
+	if !worked || !errors.Is(err, provider.ErrObservationConflict) || repository.observationCalls != 0 {
+		t.Fatalf("replacement observation: worked=%t err=%v records=%d", worked, err, repository.observationCalls)
+	}
+}
+
 func TestControllerAuthorizesRetryAfterFailedProviderObservation(t *testing.T) {
 	controller, repository, executionProvider, now := newControllerHarness(t, ActionObserve)
 	executionProvider.observation = provider.Observation{
@@ -248,12 +289,14 @@ func (r *controllerTestRepository) RequestCancel(context.Context, string, int64,
 }
 
 type controllerTestProvider struct {
-	submitCalls   int
-	submitRequest provider.SubmitRequest
-	observeCalls  int
-	submitErr     error
-	observeErr    error
-	observation   provider.Observation
+	submitCalls    int
+	submitRequest  provider.SubmitRequest
+	observeCalls   int
+	observeRequest provider.SubmitRequest
+	cancelRequest  provider.SubmitRequest
+	submitErr      error
+	observeErr     error
+	observation    provider.Observation
 }
 
 func (p *controllerTestProvider) Submit(_ context.Context, request provider.SubmitRequest) (provider.JobRef, error) {
@@ -265,13 +308,15 @@ func (p *controllerTestProvider) Submit(_ context.Context, request provider.Subm
 	return provider.JobRef{ID: "job-1"}, nil
 }
 
-func (p *controllerTestProvider) Observe(context.Context, provider.SubmitRequest) (provider.Observation, error) {
+func (p *controllerTestProvider) Observe(_ context.Context, request provider.SubmitRequest) (provider.Observation, error) {
 	p.observeCalls++
+	p.observeRequest = request
 	return p.observation, p.observeErr
 }
 
-func (p *controllerTestProvider) Cancel(context.Context, provider.SubmitRequest) (provider.Observation, error) {
-	return provider.Observation{}, errors.New("unexpected Cancel call")
+func (p *controllerTestProvider) Cancel(_ context.Context, request provider.SubmitRequest) (provider.Observation, error) {
+	p.cancelRequest = request
+	return p.observation, nil
 }
 
 func (p *controllerTestProvider) Cleanup(context.Context, provider.SubmitRequest) error { return nil }

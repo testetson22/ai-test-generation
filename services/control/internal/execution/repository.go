@@ -66,6 +66,7 @@ type TaskRecord struct {
 	ActiveAttemptID     string
 	NextActionAt        time.Time
 	TerminalReason      string
+	CancelRequestedAt   *time.Time
 	ExecutionResult     *Artifact
 	CreatedAt           time.Time
 	UpdatedAt           time.Time

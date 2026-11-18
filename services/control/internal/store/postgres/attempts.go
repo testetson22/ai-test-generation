@@ -229,6 +229,7 @@ func (s *Store) RecordObservation(ctx context.Context, claim execution.Claim, ob
 		SubmissionToken: claim.SubmissionToken, TaskID: claim.TaskID, AttemptID: claim.AttemptID,
 		TaskSpecDigest: claim.TaskSpecDigest, ProfileID: spec.Profile.ProfileID,
 		ProfileVersion: spec.Profile.ProfileVersion, ProfileDigest: spec.Profile.Artifact.Digest,
+		KnownJob: claim.ProviderJob,
 	}
 	if err := observation.ValidateFor(request); err != nil {
 		return err
@@ -304,10 +305,10 @@ func (s *Store) RecordObservation(ctx context.Context, claim execution.Claim, ob
 		}
 		return tx.Commit()
 	}
-	if attempt.status == "completed" || attempt.status == "failed" || attempt.status == "cancelled" || attempt.status == "superseded" {
+	if (attempt.status == "completed" || attempt.status == "failed" || attempt.status == "cancelled" || attempt.status == "superseded") && task.Status != "cancel_requested" {
 		return tx.Commit()
 	}
-	if err := s.applyObservation(ctx, tx, task, claim, observation, receivedAt, pollInterval); err != nil {
+	if err := s.applyObservation(ctx, tx, task, attempt, claim, observation, receivedAt, pollInterval); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -329,7 +330,7 @@ func rescheduleClaimAfterObservation(ctx context.Context, tx *sql.Tx, task execu
 	return nil
 }
 
-func (s *Store) applyObservation(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, claim execution.Claim, observation provider.Observation, receivedAt time.Time, pollInterval time.Duration) error {
+func (s *Store) applyObservation(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, attempt lockedAttempt, claim execution.Claim, observation provider.Observation, receivedAt time.Time, pollInterval time.Duration) error {
 	next := receivedAt.Add(pollInterval).UTC()
 	var attemptStatus string
 	taskStatus := task.Status
@@ -358,8 +359,16 @@ func (s *Store) applyObservation(ctx context.Context, tx *sql.Tx, task execution
 	default:
 		return fmt.Errorf("unsupported provider observation status %q", observation.Status)
 	}
-	if task.Status == "cancel_requested" && taskStatus != "cancelled" && taskStatus != "failed" {
+	if task.CancelRequestedAt != nil || task.Status == "cancel_requested" {
 		taskStatus = "cancel_requested"
+		if observation.TerminationConfirmed && (observation.Status == provider.StatusCompleted || observation.Status == provider.StatusFailed || observation.Status == provider.StatusCancelled) {
+			taskStatus = "cancelled"
+		}
+		// Cancellation reconciles termination without rewriting an already
+		// reported workload outcome or invalidating that attempt's evidence.
+		if attempt.status == "completed" || attempt.status == "failed" {
+			attemptStatus, failure = attempt.status, attempt.failureCategory
+		}
 	}
 	finishedAt := any(nil)
 	if attemptStatus == "completed" || attemptStatus == "failed" || attemptStatus == "cancelled" {
@@ -369,10 +378,16 @@ func (s *Store) applyObservation(ctx context.Context, tx *sql.Tx, task execution
 		UPDATE execution_attempts SET status = $2, failure_category = NULLIF($3, ''),
 		       provider_job_id = COALESCE(NULLIF($7, ''), provider_job_id),
 	       started_at = COALESCE(started_at, CASE WHEN $2 IN ('running', 'completed', 'failed') THEN $4::timestamptz ELSE NULL END),
-	       finished_at = COALESCE($5::timestamptz, finished_at), claim_holder = NULL, lease_expires_at = NULL,
-	       next_action_at = $6, updated_at = $4
-		WHERE attempt_id = $1`, claim.AttemptID, attemptStatus, failure, receivedAt.UTC(), finishedAt, next, observation.Job.ID); err != nil {
+	       finished_at = COALESCE(finished_at, $5::timestamptz), claim_holder = NULL, lease_expires_at = NULL,
+	       next_action_at = $6, updated_at = $4,
+	       termination_confirmed = termination_confirmed OR $8
+		WHERE attempt_id = $1`, claim.AttemptID, attemptStatus, failure, receivedAt.UTC(), finishedAt, next, observation.Job.ID, observation.TerminationConfirmed); err != nil {
 		return fmt.Errorf("update execution attempt from provider observation: %w", err)
+	}
+	if taskStatus == "cancel_requested" && task.CancelRequestedAt == nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET cancel_requested_at = $2 WHERE task_id = $1`, task.TaskID, receivedAt.UTC()); err != nil {
+			return fmt.Errorf("retain provider cancellation intent: %w", err)
+		}
 	}
 	if taskStatus == task.Status {
 		if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET next_action_at = $2, updated_at = $3 WHERE task_id = $1`, task.TaskID, next, receivedAt.UTC()); err != nil {
@@ -383,6 +398,8 @@ func (s *Store) applyObservation(ctx context.Context, tx *sql.Tx, task execution
 	reason := ""
 	if taskStatus == "failed" {
 		reason = failure
+	} else if taskStatus == "cancelled" || taskStatus == "cancel_requested" {
+		reason = "cancellation requested"
 	}
 	return transitionTask(ctx, tx, task, taskStatus, reason, receivedAt, next, "provider_observed", map[string]any{
 		"attempt_id": claim.AttemptID, "sequence": observation.Sequence,
@@ -405,6 +422,9 @@ func (s *Store) AuthorizeRetry(ctx context.Context, taskID, decisionID string, n
 	}
 	if err != nil {
 		return execution.RetryDecision{}, fmt.Errorf("lock retry task: %w", err)
+	}
+	if task.CancelRequestedAt != nil {
+		return execution.RetryDecision{}, execution.ErrRetryNotAuthorized
 	}
 	if task.Status == "eligible" {
 		prior, err := latestRetryDecision(ctx, tx, taskID)
@@ -486,7 +506,7 @@ func (s *Store) AuthorizeRetry(ctx context.Context, taskID, decisionID string, n
 	if err := transitionTask(ctx, tx, task, "eligible", "", now, nextAttempt, "retry_authorized", decision); err != nil {
 		return execution.RetryDecision{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET active_attempt_id = NULL, next_action_at = $2 WHERE task_id = $1`, taskID, nextAttempt.UTC()); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE execution_tasks SET active_attempt_id = NULL, execution_result_bytes = NULL, next_action_at = $2 WHERE task_id = $1`, taskID, nextAttempt.UTC()); err != nil {
 		return execution.RetryDecision{}, fmt.Errorf("schedule authorized retry: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -500,7 +520,7 @@ func (s *Store) ScheduleRetryableFailures(ctx context.Context, now time.Time) er
 		SELECT t.task_id, a.attempt_id
 		FROM execution_tasks t
 		JOIN execution_attempts a ON a.attempt_id = t.active_attempt_id
-		WHERE t.status = 'failed'
+		WHERE t.status = 'failed' AND t.cancel_requested_at IS NULL
 		  AND NOT EXISTS (SELECT 1 FROM execution_retry_decisions d WHERE d.task_id = t.task_id AND d.predecessor_attempt_id = a.attempt_id)
 		ORDER BY t.next_action_at, t.created_at, t.task_id`)
 	if err != nil {
@@ -651,7 +671,7 @@ func cancellationReplay(ctx context.Context, tx *sql.Tx, task execution.TaskReco
 }
 
 func requestTaskCancellation(ctx context.Context, tx *sql.Tx, task execution.TaskRecord, now time.Time) (execution.TaskRecord, error) {
-	if terminalTask(task.Status) || task.Status == "cancel_requested" {
+	if (terminalTask(task.Status) && task.Status != "failed") || task.Status == "cancel_requested" {
 		return task, nil
 	}
 	status := "cancel_requested"
@@ -659,8 +679,16 @@ func requestTaskCancellation(ctx context.Context, tx *sql.Tx, task execution.Tas
 	if task.ActiveAttemptID == "" {
 		status = "not_reached"
 		reason = "cancelled before any worker attempt was launched"
-	} else if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET next_action_at = $2, updated_at = $2 WHERE attempt_id = $1`, task.ActiveAttemptID, now.UTC()); err != nil {
-		return execution.TaskRecord{}, fmt.Errorf("schedule provider cancellation: %w", err)
+	} else {
+		var terminated bool
+		if err := tx.QueryRowContext(ctx, `SELECT termination_confirmed FROM execution_attempts WHERE attempt_id = $1 FOR UPDATE`, task.ActiveAttemptID).Scan(&terminated); err != nil {
+			return execution.TaskRecord{}, fmt.Errorf("load attempt for cancellation: %w", err)
+		}
+		if terminated {
+			status = "cancelled"
+		} else if _, err := tx.ExecContext(ctx, `UPDATE execution_attempts SET next_action_at = $2, updated_at = $2 WHERE attempt_id = $1`, task.ActiveAttemptID, now.UTC()); err != nil {
+			return execution.TaskRecord{}, fmt.Errorf("schedule provider cancellation: %w", err)
+		}
 	}
 	if err := transitionTask(ctx, tx, task, status, reason, now, now.UTC(), "cancellation_requested", map[string]any{"active_attempt_id": task.ActiveAttemptID}); err != nil {
 		return execution.TaskRecord{}, err

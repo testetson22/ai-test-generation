@@ -68,7 +68,7 @@ class RunStateTests(unittest.TestCase):
                 self.assertEqual(state.status, expected_status)
                 self.assertEqual(state.terminal_reason, "analysis evidence gap")
 
-    def test_full_lifecycle_requires_durable_review_decisions(self):
+    def test_legacy_lifecycle_review_decisions_remain_replayable(self):
         state = RunState.initial("run-1")
         state = state.apply(event("run-1", "e1", 0, "admit")).state
         state = state.apply(event("run-1", "e2", 1, "analysis_started")).state
@@ -120,8 +120,8 @@ class RunStateTests(unittest.TestCase):
             )
         ).state
         self.assertEqual(state.status, "executing")
-        state = state.apply(event("run-1", "e14", 13, "execution_started")).state
-        state = state.apply(event("run-1", "e15", 14, "execution_completed")).state
+        state = state.apply(event("run-1", "e14", 13, "execution_started"), _replay=True).state
+        state = state.apply(event("run-1", "e15", 14, "execution_completed"), _replay=True).state
         state = state.apply(
             event(
                 "run-1",
@@ -130,7 +130,8 @@ class RunStateTests(unittest.TestCase):
                 "checkpoint_created",
                 checkpoint_id="cp-exec",
                 checkpoint_kind="execution_review",
-            )
+            ),
+            _replay=True,
         ).state
         self.assertEqual(state.status, "execution_review")
         state = state.apply(
@@ -138,13 +139,15 @@ class RunStateTests(unittest.TestCase):
                 "run-1", "e17", 16, "decision_recorded", checkpoint_id="cp-exec", decision="approved",
                 decision_id="decision-exec", actor_id="reviewer-1", actor_role="owner",
                 authorization_ref="approval-policy-1",
-            )
+            ),
+            _replay=True,
         ).state
         self.assertEqual(state.status, "quality_review")
         state = state.apply(
             event(
                 "run-1", "e18", 17, "checkpoint_created", checkpoint_id="cp-quality", checkpoint_kind="quality_review"
-            )
+            ),
+            _replay=True,
         ).state
         self.assertEqual(state.status, "quality_review")
         state = state.apply(
@@ -152,12 +155,43 @@ class RunStateTests(unittest.TestCase):
                 "run-1", "e19", 18, "decision_recorded", checkpoint_id="cp-quality", decision="approved",
                 decision_id="decision-quality", actor_id="reviewer-1", actor_role="owner",
                 authorization_ref="approval-policy-1",
-            )
+            ),
+            _replay=True,
         ).state
         self.assertEqual(state.status, "completed")
         self.assertEqual(state.revision, 19)
         self.assertIsNone(state.active_checkpoint_id)
         self.assertEqual(len(state.processed_event_ids), 19)
+
+    def test_generic_execution_advancement_requires_ledger_authority(self):
+        cases = [
+            ("coding", "checkpoint_created", {"checkpoint_id": "cp-exec", "checkpoint_kind": "execution_review"}),
+            ("executing", "checkpoint_created", {"checkpoint_id": "cp-exec", "checkpoint_kind": "execution_review"}),
+            ("executing", "checkpoint_created", {"checkpoint_id": "cp-quality", "checkpoint_kind": "quality_review"}),
+            ("executing", "execution_started", {}),
+            ("executing", "execution_completed", {}),
+            ("quality_review", "quality_passed", {}),
+        ]
+        for status in ("execution_review", "quality_review"):
+            cases.append((status, "decision_recorded", {
+                "checkpoint_id": "cp-existing", "decision": "approved", "decision_id": "decision-1",
+                "actor_id": "reviewer", "actor_role": "owner", "authorization_ref": "policy-1",
+            }))
+        for status, event_type, fields in cases:
+            with self.subTest(status=status, event_type=event_type, fields=fields):
+                state = RunState(run_id="run-1", status=status, active_checkpoint_id="cp-existing" if event_type == "decision_recorded" else None)
+                with self.assertRaisesRegex(InvalidTransitionError, "requires the durable execution controller"):
+                    state.apply(event("run-1", "event-unverified", 0, event_type, **fields))
+                self.assertEqual(state.status, status)
+                self.assertEqual(state.revision, 0)
+
+    def test_historical_execution_duplicate_is_idempotent_but_new_completion_is_rejected(self):
+        state = RunState(run_id="run-1", status="executing")
+        completed = event("run-1", "historical-completion", 0, "execution_completed")
+        state = state.apply(completed, _replay=True).state
+        self.assertTrue(state.apply(completed).duplicate)
+        with self.assertRaisesRegex(InvalidTransitionError, "requires the durable execution controller"):
+            state.apply(event("run-1", "new-completion", 1, "execution_completed"))
 
     def test_analysis_review_cannot_return_directly_to_plan(self):
         state = RunState(
@@ -451,7 +485,6 @@ class RunStateTests(unittest.TestCase):
 
     def test_quality_outcomes_are_explicit(self):
         expected = {
-            "quality_passed": "completed",
             "quality_blocked": "blocked",
             "quality_inconclusive": "inconclusive",
             "quality_gap": "stated_gap",

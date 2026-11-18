@@ -1,11 +1,13 @@
 package tekton
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -197,6 +199,9 @@ func ObservationFromResource(expected Resource, request provider.SubmitRequest, 
 	if err := VerifyResourceIdentity(expected, resource); err != nil {
 		return provider.Observation{}, err
 	}
+	if request.KnownJob.ID != "" && jobReference(resource) != request.KnownJob {
+		return provider.Observation{}, provider.ErrAttemptConflict
+	}
 	observation := provider.Observation{
 		SubmissionToken: request.SubmissionToken, TaskID: request.TaskID, AttemptID: request.AttemptID,
 		TaskSpecDigest: request.TaskSpecDigest, ProfileID: request.ProfileID, ProfileVersion: request.ProfileVersion,
@@ -251,10 +256,11 @@ func ObservationFromResource(expected Resource, request provider.SubmitRequest, 
 }
 
 func VerifyResourceIdentity(expected, actual Resource) error {
+	specDigest := renderedSpecDigest(actual.Spec)
 	if expected.APIVersion != actual.APIVersion || expected.Kind != actual.Kind ||
 		expected.Metadata.Name != actual.Metadata.Name || expected.Metadata.Namespace != actual.Metadata.Namespace ||
 		actual.Metadata.UID == "" || actual.Metadata.ResourceVersion == "" ||
-		renderedSpecDigest(actual.Spec) != actual.Metadata.Annotations["atg-rendered-spec-sha256"] {
+		specDigest == "" || specDigest != actual.Metadata.Annotations["atg-rendered-spec-sha256"] {
 		return provider.ErrAttemptConflict
 	}
 	for key, value := range expected.Metadata.Annotations {
@@ -332,8 +338,17 @@ func digestBytes(value []byte) string {
 }
 
 func renderedSpecDigest(data []byte) string {
-	var spec map[string]json.RawMessage
-	if err := json.Unmarshal(data, &spec); err != nil || spec == nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	value, err := canonicalSpecValue(decoder)
+	if err != nil {
+		return ""
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return ""
+	}
+	spec, ok := value.(map[string]any)
+	if !ok {
 		return ""
 	}
 	delete(spec, "status")
@@ -342,4 +357,57 @@ func renderedSpecDigest(data []byte) string {
 		return ""
 	}
 	return digestBytes(canonical)
+}
+
+// Decode recursively so key ordering is irrelevant at every depth. Numbers
+// retain their exact JSON spelling, and duplicate keys fail closed.
+func canonicalSpecValue(decoder *json.Decoder) (any, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch token {
+	case json.Delim('{'):
+		object := make(map[string]any)
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, fmt.Errorf("JSON object key is not a string")
+			}
+			if _, exists := object[key]; exists {
+				return nil, fmt.Errorf("duplicate JSON key %q", key)
+			}
+			value, err := canonicalSpecValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			object[key] = value
+		}
+		if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+			return nil, fmt.Errorf("unterminated JSON object")
+		}
+		return object, nil
+	case json.Delim('['):
+		array := make([]any, 0)
+		for decoder.More() {
+			value, err := canonicalSpecValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			array = append(array, value)
+		}
+		if token, err := decoder.Token(); err != nil || token != json.Delim(']') {
+			return nil, fmt.Errorf("unterminated JSON array")
+		}
+		return array, nil
+	default:
+		if _, ok := token.(json.Delim); ok {
+			return nil, fmt.Errorf("unexpected JSON delimiter")
+		}
+		return token, nil
+	}
 }

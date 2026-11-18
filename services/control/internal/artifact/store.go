@@ -39,6 +39,7 @@ type FileStore struct {
 	mu       sync.Mutex
 	root     *os.Root
 	maxBytes int64
+	syncDir  func(*os.Root) error
 }
 
 func NewFileStore(rootPath string, maxBytes int64) (*FileStore, error) {
@@ -68,7 +69,23 @@ func NewFileStore(rootPath string, maxBytes int64) (*FileStore, error) {
 		_ = root.Close()
 		return nil, fmt.Errorf("artifact root changed while opening")
 	}
-	return &FileStore{root: root, maxBytes: maxBytes}, nil
+	// MkdirAll may have created multiple ancestors. Repeat these barriers on
+	// reopen as well, since an earlier initialization could have failed to sync.
+	for parent := filepath.Dir(absolute); ; parent = filepath.Dir(parent) {
+		directory, err := os.OpenRoot(parent)
+		if err == nil {
+			err = syncDirectory(directory)
+			_ = directory.Close()
+		}
+		if err != nil {
+			_ = root.Close()
+			return nil, fmt.Errorf("sync artifact root ancestor: %w", err)
+		}
+		if parent == filepath.Dir(parent) {
+			break
+		}
+	}
+	return &FileStore{root: root, maxBytes: maxBytes, syncDir: syncDirectory}, nil
 }
 
 func (s *FileStore) Put(ctx context.Context, content []byte) (Ref, error) {
@@ -82,7 +99,7 @@ func (s *FileStore) Put(ctx context.Context, content []byte) (Ref, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	directory, err := s.openDirectory("sha256", digest[7:9])
+	directory, err := s.openDirectory(true, "sha256", digest[7:9])
 	if err != nil {
 		return Ref{}, err
 	}
@@ -91,6 +108,9 @@ func (s *FileStore) Put(ctx context.Context, content []byte) (Ref, error) {
 	if existing, err := readObject(directory, name, s.maxBytes); err == nil {
 		if Digest(existing) != digest || !equal(existing, content) {
 			return Ref{}, ErrCorrupt
+		}
+		if err := s.syncDir(directory); err != nil {
+			return Ref{}, err
 		}
 		return Ref{Digest: digest, SizeBytes: int64(len(existing))}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -131,7 +151,7 @@ func (s *FileStore) Put(ctx context.Context, content []byte) (Ref, error) {
 		return Ref{}, fmt.Errorf("publish artifact: %w", err)
 	}
 	cleanup = false
-	if err := syncDirectory(directory); err != nil {
+	if err := s.syncDir(directory); err != nil {
 		return Ref{}, err
 	}
 	return Ref{Digest: digest, SizeBytes: int64(len(content))}, nil
@@ -150,7 +170,7 @@ func (s *FileStore) Get(ctx context.Context, digest string, maxBytes int64) ([]b
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	directory, err := s.openDirectory("sha256", digest[7:9])
+	directory, err := s.openDirectory(false, "sha256", digest[7:9])
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +196,7 @@ func Digest(content []byte) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
-func (s *FileStore) openDirectory(parts ...string) (*os.Root, error) {
+func (s *FileStore) openDirectory(syncExisting bool, parts ...string) (*os.Root, error) {
 	current := s.root
 	owned := false
 	for _, part := range parts {
@@ -199,8 +219,9 @@ func (s *FileStore) openDirectory(parts ...string) (*os.Root, error) {
 			}
 			return nil, fmt.Errorf("artifact path contains a symlink or non-directory")
 		}
-		if created {
-			if err := syncDirectory(current); err != nil {
+		// A previous call may have created this directory but failed its sync.
+		if syncExisting || created {
+			if err := s.syncDir(current); err != nil {
 				if owned {
 					_ = current.Close()
 				}

@@ -42,7 +42,15 @@ jobs:
           python -m venv "$RUNNER_TEMP/atg-wheel"
           "$RUNNER_TEMP/atg-wheel/bin/pip" install "$RUNNER_TEMP"/wheels/atg_reference-*.whl
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/atg-wheel/bin/python" -c 'from atg.domain.schema_validation import contract_asset_path; assert (contract_asset_path("v1") / "analysis.schema.json").is_file()'
+          "$RUNNER_TEMP/atg-wheel/bin/python" - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from atg.domain.schema_validation import contract_asset_path, validate_contract_document
+          assert (contract_asset_path("v1") / "analysis.schema.json").is_file()
+          example = Path(os.environ["GITHUB_WORKSPACE"]) / "contracts/examples/execution-pair-view.json"
+          validate_contract_document(json.loads(example.read_text()), "execution-pair-view")
+          PY
       - name: Run unit tests
         env:
           PYTHONPATH: src

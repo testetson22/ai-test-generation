@@ -50,10 +50,8 @@ def validate_contract_document(document: Mapping[str, object], expected: str) ->
     """Validate one untrusted document against an expected contract schema."""
     schemas = _schemas()
     schema = schemas[expected]
-    common = schemas["common"]
-    registry = Registry().with_resource(common["$id"], Resource.from_contents(common))
     try:
-        Draft202012Validator(schema, registry=registry, format_checker=FormatChecker()).validate(document)
+        Draft202012Validator(schema, registry=_registry(), format_checker=FormatChecker()).validate(document)
     except ValidationError as exc:
         raise ContractValidationError(f"invalid {expected} contract document") from exc
 
@@ -71,12 +69,17 @@ def validate_contract_fragment(
     if not isinstance(schema, Mapping):
         raise ValueError("canonical contract schema fragment must be an object")
     schema = {**schema, "$id": schemas[expected]["$id"]}
-    common = schemas["common"]
-    registry = Registry().with_resource(common["$id"], Resource.from_contents(common))
     try:
         Draft202012Validator(
-            schema, registry=registry, format_checker=FormatChecker()
+            schema, registry=_registry(), format_checker=FormatChecker()
         ).validate(document)
     except ValidationError as exc:
         location = "/".join(schema_path)
         raise ContractValidationError(f"invalid {expected} contract fragment at {location}") from exc
+
+
+def _registry() -> Registry:
+    """Resolve all canonical sibling references locally, including installed assets."""
+    return Registry().with_resources(
+        (schema["$id"], Resource.from_contents(schema)) for schema in _schemas().values()
+    )

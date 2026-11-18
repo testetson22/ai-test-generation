@@ -1,0 +1,38 @@
+{
+  "generator": "atg.domain.generation.canonical_patch",
+  "vectors": [
+    {
+      "name": "empty-only",
+      "base_files": {},
+      "materialized_files": {"tests/__init__.py": ""},
+      "changed_files": ["tests/__init__.py"],
+      "patch": "diff --git a/tests/__init__.py b/tests/__init__.py\nnew file mode 100644\n",
+      "patch_digest": "sha256:d0937ea812aa895ae2a1c4241b879e79a1a8b1ca065b0b03f8bade804e7bc303",
+      "materialized_digest": "sha256:7247335dc6ec695b272c3c44eaf79bf7c59a410923856a578c4927299dd5035e"
+    },
+    {
+      "name": "empty-first",
+      "base_files": {},
+      "materialized_files": {
+        "tests/__init__.py": "",
+        "tests/test_run.py": "def test_run():\n    assert True\n"
+      },
+      "changed_files": ["tests/__init__.py", "tests/test_run.py"],
+      "patch": "diff --git a/tests/__init__.py b/tests/__init__.py\nnew file mode 100644\ndiff --git a/tests/test_run.py b/tests/test_run.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/test_run.py\n@@ -0,0 +1,2 @@\n+def test_run():\n+    assert True\n",
+      "patch_digest": "sha256:94d815f0394c00744945bf18376697507081eb8915b4289d303c92c5a8bcfea2",
+      "materialized_digest": "sha256:ef14881275626fdec94e18122ad55ab2c5e3d4a9b27f9fd4d328b1796364e4e8"
+    },
+    {
+      "name": "empty-last",
+      "base_files": {},
+      "materialized_files": {
+        "tests/test_run.py": "def test_run():\n    assert True\n",
+        "tests/z/__init__.py": ""
+      },
+      "changed_files": ["tests/test_run.py", "tests/z/__init__.py"],
+      "patch": "diff --git a/tests/test_run.py b/tests/test_run.py\nnew file mode 100644\n--- /dev/null\n+++ b/tests/test_run.py\n@@ -0,0 +1,2 @@\n+def test_run():\n+    assert True\ndiff --git a/tests/z/__init__.py b/tests/z/__init__.py\nnew file mode 100644\n",
+      "patch_digest": "sha256:f8a8308d927071cddc000dffd18b2f671e89415c9ee882e589c6f1ea87064c5b",
+      "materialized_digest": "sha256:f1bf975b08fed9fdf45d8e502a63aed444f13539c862a88f6391a0da8675fcfe"
+    }
+  ]
+}

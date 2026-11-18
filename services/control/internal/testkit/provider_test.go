@@ -97,6 +97,71 @@ func TestProviderStateCanOutliveControllerReconstruction(t *testing.T) {
 	}
 }
 
+func TestKnownJobIsReconciliationContextNotImmutableAttemptIdentity(t *testing.T) {
+	jobs := NewStatefulProvider(nil)
+	request := validSubmitRequest("token-known", "task-known", "attempt-known")
+	job, err := jobs.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.KnownJob = job
+	if repeated, err := jobs.Submit(context.Background(), request); err != nil || repeated != job || jobs.LaunchCount() != 1 {
+		t.Fatalf("reconciliation resubmitted job: job=%#v err=%v launches=%d", repeated, err, jobs.LaunchCount())
+	}
+	if observed, err := jobs.Observe(context.Background(), request); err != nil || observed.Job != job || observed.Status != provider.StatusPending {
+		t.Fatalf("reconciliation context changed attempt identity: observation=%#v err=%v", observed, err)
+	}
+	if cancelled, err := jobs.Cancel(context.Background(), request); err != nil || cancelled.Job != job || cancelled.Status != provider.StatusCancelled {
+		t.Fatalf("known job cancellation: observation=%#v err=%v", cancelled, err)
+	}
+	if err := jobs.Cleanup(context.Background(), request); err != nil || !jobs.WasCleaned(request.SubmissionToken) {
+		t.Fatalf("known job cleanup: err=%v cleaned=%t", err, jobs.WasCleaned(request.SubmissionToken))
+	}
+}
+
+func TestMismatchedKnownJobCannotMutateSimulatedWorkload(t *testing.T) {
+	jobs := NewStatefulProvider(nil)
+	request := validSubmitRequest("token-fenced", "task-fenced", "attempt-fenced")
+	job, err := jobs.Submit(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.KnownJob = provider.JobRef{ID: "other-job"}
+	if _, err := jobs.Submit(context.Background(), request); !errors.Is(err, provider.ErrAttemptConflict) {
+		t.Fatalf("conflicting known job submit: %v", err)
+	}
+	if _, err := jobs.Observe(context.Background(), request); !errors.Is(err, provider.ErrAttemptConflict) {
+		t.Fatalf("conflicting known job observe: %v", err)
+	}
+	if _, err := jobs.Cancel(context.Background(), request); !errors.Is(err, provider.ErrAttemptConflict) {
+		t.Fatalf("conflicting known job cancel: %v", err)
+	}
+	if err := jobs.Cleanup(context.Background(), request); !errors.Is(err, provider.ErrAttemptConflict) {
+		t.Fatalf("conflicting known job cleanup: %v", err)
+	}
+	request.KnownJob = job
+	observed, err := jobs.Observe(context.Background(), request)
+	if err != nil || observed.Status != provider.StatusPending || jobs.WasCleaned(request.SubmissionToken) || jobs.LaunchCount() != 1 {
+		t.Fatalf("conflict mutated workload: observation=%#v err=%v cleaned=%t launches=%d", observed, err, jobs.WasCleaned(request.SubmissionToken), jobs.LaunchCount())
+	}
+}
+
+func TestKnownMissingJobDoesNotAuthorizeAnotherLaunch(t *testing.T) {
+	jobs := NewStatefulProvider(nil)
+	request := validSubmitRequest("token-missing", "task-missing", "attempt-missing")
+	request.KnownJob = provider.JobRef{ID: "persisted-missing-job"}
+	if _, err := jobs.Submit(context.Background(), request); !errors.Is(err, provider.ErrAttemptNotFound) || jobs.LaunchCount() != 0 {
+		t.Fatalf("known missing job relaunched: err=%v launches=%d", err, jobs.LaunchCount())
+	}
+	observation, err := jobs.Observe(context.Background(), request)
+	if err != nil || observation.Status != provider.StatusNotFound || observation.Job != request.KnownJob || observation.TerminationConfirmed {
+		t.Fatalf("missing known job: observation=%#v err=%v", observation, err)
+	}
+	if err := observation.ValidateFor(request); err != nil {
+		t.Fatalf("missing job observation lost reconciliation context: %v", err)
+	}
+}
+
 func validSubmitRequest(token, taskID, attemptID string) provider.SubmitRequest {
 	return provider.SubmitRequest{
 		SubmissionToken: token, TaskID: taskID, AttemptID: attemptID,

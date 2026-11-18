@@ -168,6 +168,7 @@ func (c *Controller) providerRequest(claim Claim) (provider.SubmitRequest, error
 		SubmissionToken: claim.SubmissionToken, TaskID: claim.TaskID, AttemptID: claim.AttemptID,
 		TaskSpecDigest: claim.TaskSpecDigest, ProfileID: spec.Profile.ProfileID,
 		ProfileVersion: spec.Profile.ProfileVersion, ProfileDigest: spec.Profile.Artifact.Digest,
+		KnownJob: claim.ProviderJob,
 	}
 	if err := request.Validate(); err != nil {
 		return provider.SubmitRequest{}, err

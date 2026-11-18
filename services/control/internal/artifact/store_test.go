@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -89,5 +90,102 @@ func TestFileStoreRejectsOversizeCorruptionAndSymlinkedBuckets(t *testing.T) {
 	entries, err := os.ReadDir(outside)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("outside bucket entries = %v, error = %v; want empty", entries, err)
+	}
+}
+
+func TestFileStoreRetriesFailedDirectoryDurabilityBarriers(t *testing.T) {
+	content := []byte("durable evidence")
+	digest := Digest(content)
+	directories := []string{".", "sha256", filepath.Join("sha256", digest[7:9])}
+	for barrier, name := range []string{"root ancestor", "digest ancestor", "post rename"} {
+		for _, restart := range []struct {
+			name   string
+			reopen bool
+		}{{name: "same store"}, {name: "reopened store", reopen: true}} {
+			t.Run(name+"/"+restart.name, func(t *testing.T) {
+				root := filepath.Join(t.TempDir(), "objects")
+				store, err := NewFileStore(root, 1024)
+				if err != nil {
+					t.Fatalf("open store: %v", err)
+				}
+				defer func() {
+					if store != nil {
+						_ = store.Close()
+					}
+				}()
+				injected := errors.New("injected directory fsync failure")
+				remainingFailures := 2
+				var syncCalls []string
+				syncDir := func(directory *os.Root) error {
+					info, err := directory.Stat(".")
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, relative := range directories {
+						expected, err := os.Stat(filepath.Join(root, relative))
+						if errors.Is(err, os.ErrNotExist) {
+							continue
+						}
+						if err != nil {
+							t.Fatal(err)
+						}
+						if os.SameFile(info, expected) {
+							syncCalls = append(syncCalls, relative)
+							if relative == directories[barrier] && remainingFailures > 0 {
+								remainingFailures--
+								return injected
+							}
+							return syncDirectory(directory)
+						}
+					}
+					return errors.New("sync requested for an unexpected directory")
+				}
+				store.syncDir = syncDir
+				for attempt := 0; attempt < 2; attempt++ {
+					syncCalls = nil
+					ref, err := store.Put(context.Background(), content)
+					if !errors.Is(err, injected) || ref != (Ref{}) {
+						t.Fatalf("attempt %d acknowledged unsynced evidence: %#v, %v", attempt, ref, err)
+					}
+					if !slices.Equal(syncCalls, directories[:barrier+1]) {
+						t.Fatalf("attempt %d sync calls = %v, want %v", attempt, syncCalls, directories[:barrier+1])
+					}
+					objectPath := filepath.Join(root, directories[2], digest[9:])
+					actual, readErr := os.ReadFile(objectPath)
+					if barrier == 2 {
+						if readErr != nil || string(actual) != string(content) {
+							t.Fatalf("post-rename object was not published before sync failure: %q, %v", actual, readErr)
+						}
+					} else if !errors.Is(readErr, os.ErrNotExist) {
+						t.Fatalf("object published despite failed ancestor sync: %q, %v", actual, readErr)
+					}
+					if restart.reopen && attempt == 0 {
+						if err := store.Close(); err != nil {
+							t.Fatal(err)
+						}
+						store, err = NewFileStore(root, 1024)
+						if err != nil {
+							t.Fatalf("reopen after failed sync: %v", err)
+						}
+						store.syncDir = syncDir
+					}
+				}
+				for attempt := 0; attempt < 2; attempt++ {
+					syncCalls = nil
+					ref, err := store.Put(context.Background(), content)
+					if err != nil || ref != (Ref{Digest: digest, SizeBytes: int64(len(content))}) {
+						t.Fatalf("durable retry/deduplication = %#v, %v", ref, err)
+					}
+					if !slices.Equal(syncCalls, directories) {
+						t.Fatalf("successful write skipped durability barriers: %v, want %v", syncCalls, directories)
+					}
+				}
+				store.syncDir = func(*os.Root) error { return injected }
+				actual, err := store.Get(context.Background(), digest, 1024)
+				if err != nil || string(actual) != string(content) {
+					t.Fatalf("reading durable bytes required another sync: %q, %v", actual, err)
+				}
+			})
+		}
 	}
 }

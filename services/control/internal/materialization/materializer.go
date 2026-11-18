@@ -589,12 +589,16 @@ func verifyPatchMaterialization(patch []byte, paths []string, baseFiles, materia
 			created = true
 			lineIndex++
 		}
+		before, existed := baseFiles[filePath]
+		// The reference emits no unified headers or hunks for a new empty file.
+		if created && !existed && materializedFiles[filePath] == "" && (lineIndex == len(lines) || strings.HasPrefix(lines[lineIndex], "diff --git ")) {
+			continue
+		}
 		if lineIndex+1 >= len(lines) || !strings.HasPrefix(lines[lineIndex], "--- ") || !strings.HasPrefix(lines[lineIndex+1], "+++ ") {
 			return fmt.Errorf("patch file headers are incomplete for %s", filePath)
 		}
 		oldName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(lines[lineIndex], "\n"), "--- "), "\r")
 		newName := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(lines[lineIndex+1], "\n"), "+++ "), "\r")
-		before, existed := baseFiles[filePath]
 		if created == existed || existed && (oldName != "a/"+filePath || newName != "b/"+filePath) || !existed && (oldName != "/dev/null" || newName != "b/"+filePath) {
 			return fmt.Errorf("patch preimage headers do not match base artifact for %s", filePath)
 		}

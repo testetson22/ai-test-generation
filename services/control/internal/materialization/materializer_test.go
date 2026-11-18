@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -233,6 +234,142 @@ func TestMaterializeApprovedTestsPreservesMissingFinalNewline(t *testing.T) {
 	content, err := os.ReadFile(filePath)
 	if err != nil || string(content) != "new" {
 		t.Fatalf("materialized file bytes = %q, %v", content, err)
+	}
+}
+
+func TestMaterializePythonCanonicalEmptyFileVectors(t *testing.T) {
+	data, err := os.ReadFile("testdata/python-empty-files.json")
+	if err != nil {
+		t.Fatalf("read Python conformance vectors: %v", err)
+	}
+	var fixture struct {
+		Generator string `json:"generator"`
+		Vectors   []struct {
+			Name               string            `json:"name"`
+			BaseFiles          map[string]string `json:"base_files"`
+			MaterializedFiles  map[string]string `json:"materialized_files"`
+			ChangedFiles       []string          `json:"changed_files"`
+			Patch              string            `json:"patch"`
+			PatchDigest        string            `json:"patch_digest"`
+			MaterializedDigest string            `json:"materialized_digest"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatalf("decode Python conformance vectors: %v", err)
+	}
+	if fixture.Generator != "atg.domain.generation.canonical_patch" || len(fixture.Vectors) != 3 {
+		t.Fatalf("unexpected conformance fixture: %#v", fixture)
+	}
+	for _, vector := range fixture.Vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			request := materializationRequest(t.TempDir())
+			request.Patch = []byte(vector.Patch)
+			request.ChangedFiles = vector.ChangedFiles
+			request.BaseFilesJSON = pythonCanonicalStringMap(vector.BaseFiles)
+			request.MaterializedTestsJSON = pythonCanonicalStringMap(vector.MaterializedFiles)
+			request = bindApprovedRequest(request)
+			if request.ExpectedPatchDigest != vector.PatchDigest || request.ExpectedTestsDigest != vector.MaterializedDigest {
+				t.Fatal("approved inputs differ from Python conformance digests")
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				result, err := MaterializeApprovedTests(context.Background(), request)
+				if err != nil {
+					t.Fatalf("materialize reference patch, attempt %d: %v", attempt, err)
+				}
+				if result.PatchDigest != vector.PatchDigest || result.MaterializedDigest != vector.MaterializedDigest || !slices.Equal(result.ChangedFiles, vector.ChangedFiles) {
+					t.Fatalf("materialized identity differs from reference: %#v", result)
+				}
+				for name, expected := range vector.MaterializedFiles {
+					filePath := filepath.Join(request.WorkspaceRoot, filepath.FromSlash(name))
+					info, err := os.Lstat(filePath)
+					if err != nil || !info.Mode().IsRegular() {
+						t.Fatalf("materialized target %q is not a regular file: %v", name, err)
+					}
+					actual, err := os.ReadFile(filePath)
+					if err != nil || string(actual) != expected {
+						t.Fatalf("materialized %q = %q, %v; want %q", name, actual, err, expected)
+					}
+				}
+				if err := VerifyMaterializedTests(request.WorkspaceRoot, result); err != nil {
+					t.Fatalf("verify reference materialization: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestMaterializeEmptyFileRejectsIncompleteOrConflictingCreation(t *testing.T) {
+	const name = "tests/__init__.py"
+	const header = "diff --git a/tests/__init__.py b/tests/__init__.py\n"
+	for _, testCase := range []struct {
+		name   string
+		mutate func(*Request)
+	}{
+		{name: "missing creation metadata", mutate: func(r *Request) { r.Patch = []byte(header) }},
+		{name: "unsupported creation mode", mutate: func(r *Request) { r.Patch = []byte(header + "new file mode 100755\n") }},
+		{name: "nonempty approved file", mutate: func(r *Request) {
+			r.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{name: "not empty\n"})
+		}},
+		{name: "empty preimage exists", mutate: func(r *Request) { r.BaseFilesJSON = pythonCanonicalStringMap(map[string]string{name: ""}) }},
+		{name: "nonempty preimage exists", mutate: func(r *Request) { r.BaseFilesJSON = pythonCanonicalStringMap(map[string]string{name: "before\n"}) }},
+		{name: "unexpected trailing data", mutate: func(r *Request) { r.Patch = append(r.Patch, []byte("unexpected\n")...) }},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			request := materializationRequest(t.TempDir())
+			request.ChangedFiles = []string{name}
+			request.Patch = []byte(header + "new file mode 100644\n")
+			request.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{name: ""})
+			testCase.mutate(&request)
+			request = bindApprovedRequest(request)
+			if _, err := MaterializeApprovedTests(context.Background(), request); err == nil {
+				t.Fatal("invalid header-only creation was accepted")
+			}
+			entries, err := os.ReadDir(request.WorkspaceRoot)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("workspace changed after rejected creation: %v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestMaterializeEmptyFileRejectsUnexpectedWorkspaceTarget(t *testing.T) {
+	for _, target := range []string{"nonempty", "symlink"} {
+		t.Run(target, func(t *testing.T) {
+			request := materializationRequest(t.TempDir())
+			request.ChangedFiles = []string{"tests/__init__.py"}
+			request.Patch = []byte("diff --git a/tests/__init__.py b/tests/__init__.py\nnew file mode 100644\n")
+			request.MaterializedTestsJSON = pythonCanonicalStringMap(map[string]string{"tests/__init__.py": ""})
+			request = bindApprovedRequest(request)
+			filePath := filepath.Join(request.WorkspaceRoot, "tests", "__init__.py")
+			if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside.py")
+			if target == "symlink" {
+				if err := os.WriteFile(outside, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, filePath); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(filePath, []byte("keep\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := MaterializeApprovedTests(context.Background(), request); err == nil {
+				t.Fatal("empty creation accepted an unexpected target")
+			}
+			if target == "symlink" {
+				actual, err := os.Readlink(filePath)
+				if err != nil || actual != outside {
+					t.Fatalf("symlink changed after rejection: %q, %v", actual, err)
+				}
+			} else {
+				actual, err := os.ReadFile(filePath)
+				if err != nil || string(actual) != "keep\n" {
+					t.Fatalf("workspace preimage changed after rejection: %q, %v", actual, err)
+				}
+			}
+		})
 	}
 }
 

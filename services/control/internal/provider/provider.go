@@ -42,6 +42,15 @@ type SubmitRequest struct {
 	ProfileID       string `json:"profile_id"`
 	ProfileVersion  string `json:"profile_version"`
 	ProfileDigest   string `json:"profile_digest"`
+	// KnownJob is persisted reconciliation context, not immutable task identity.
+	// It may be absent while recovering an ambiguous initial submission.
+	KnownJob JobRef `json:"known_job,omitempty"`
+}
+
+// SameAttempt excludes reconciliation context from immutable request identity.
+func (r SubmitRequest) SameAttempt(other SubmitRequest) bool {
+	r.KnownJob, other.KnownJob = JobRef{}, JobRef{}
+	return r == other
 }
 
 func (r SubmitRequest) Validate() error {
@@ -106,7 +115,8 @@ func (o Observation) ValidateFor(request SubmitRequest) error {
 	}
 	if o.SubmissionToken != request.SubmissionToken || o.TaskID != request.TaskID || o.AttemptID != request.AttemptID ||
 		o.TaskSpecDigest != request.TaskSpecDigest || o.ProfileID != request.ProfileID ||
-		o.ProfileVersion != request.ProfileVersion || o.ProfileDigest != request.ProfileDigest {
+		o.ProfileVersion != request.ProfileVersion || o.ProfileDigest != request.ProfileDigest ||
+		request.KnownJob.ID != "" && o.Job != request.KnownJob {
 		return ErrObservationConflict
 	}
 	return nil
@@ -120,6 +130,7 @@ type Provider interface {
 	// Observe reconciles the full attempt identity. NotFound alone does not
 	// authorize a new token or prove that an accepted external job never ran.
 	Observe(context.Context, SubmitRequest) (Observation, error)
+	// KnownJob must be checked before cancellation or deletion side effects.
 	Cancel(context.Context, SubmitRequest) (Observation, error)
 	Cleanup(context.Context, SubmitRequest) error
 }

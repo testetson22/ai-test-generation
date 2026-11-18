@@ -31,7 +31,7 @@
     },
     {
       "if": { "properties": { "status": { "const": "cancelled" } } },
-      "then": { "properties": { "termination_confirmed": { "const": true } } }
+      "then": { "required": ["termination_confirmed"], "properties": { "termination_confirmed": { "const": true } } }
     }
   ]
 }

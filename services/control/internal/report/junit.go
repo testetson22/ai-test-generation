@@ -150,6 +150,9 @@ func parseJUnit(data []byte) ([]testCase, error) {
 				}
 				rootSeen = true
 			}
+			if (value.Name.Local == "testsuite" || value.Name.Local == "testsuites") && len(stack) > 0 && stack[len(stack)-1].Local != "testsuite" && stack[len(stack)-1].Local != "testsuites" {
+				return nil, fmt.Errorf("%w: suites must be directly contained by suite containers", ErrInvalidReport)
+			}
 			if value.Name.Local == "testcase" {
 				if active != nil {
 					return nil, fmt.Errorf("%w: nested testcase elements are invalid", ErrInvalidReport)
@@ -224,7 +227,14 @@ func testcaseID(start xml.StartElement) (string, error) {
 	attributes := make(map[string]string, len(start.Attr))
 	for _, attribute := range start.Attr {
 		if attribute.Name.Space != "" {
-			continue
+			return "", fmt.Errorf("%w: namespaced testcase attributes are unsupported", ErrInvalidReport)
+		}
+		// Outcome-attribute dialects require their own parser; absence of a
+		// skipped child must not turn an unknown outcome into execution proof.
+		switch attribute.Name.Local {
+		case "classname", "name", "time", "assertions", "file", "line":
+		default:
+			return "", fmt.Errorf("%w: unsupported testcase attribute %q", ErrInvalidReport, attribute.Name.Local)
 		}
 		if _, duplicate := attributes[attribute.Name.Local]; duplicate {
 			return "", fmt.Errorf("%w: duplicate testcase attribute", ErrInvalidReport)

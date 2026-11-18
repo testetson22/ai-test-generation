@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/provider"
@@ -28,6 +29,11 @@ type API interface {
 	GetRun(context.Context, string, RunKind, string) (Resource, error)
 	RequestCancellation(context.Context, Resource) (Resource, error)
 	DeleteRun(context.Context, Resource) (confirmed bool, err error)
+	// ConfirmDeletion is read-only and accepts namespace/kind/name/UID even when
+	// the run is gone. Confirmation must cover owned workloads using API-visible
+	// ownership or durable deletion records, never process-local history or just
+	// GetRun NotFound. This must remain valid across provider/client restarts.
+	ConfirmDeletion(context.Context, Resource) (confirmed bool, err error)
 }
 
 type EvidenceGate interface {
@@ -63,7 +69,12 @@ func (p *Provider) Submit(ctx context.Context, request provider.SubmitRequest) (
 	if err != nil {
 		return provider.JobRef{}, err
 	}
-	created, err := p.api.CreateRun(ctx, expected)
+	var created Resource
+	if request.KnownJob.ID != "" {
+		created, err = p.api.GetRun(ctx, p.config.Namespace, p.config.Kind, expected.Metadata.Name)
+	} else {
+		created, err = p.api.CreateRun(ctx, expected)
+	}
 	if errors.Is(err, ErrAlreadyExists) {
 		created, err = p.api.GetRun(ctx, p.config.Namespace, p.config.Kind, expected.Metadata.Name)
 		if errors.Is(err, ErrNotFound) {
@@ -87,6 +98,9 @@ func (p *Provider) Submit(ctx context.Context, request provider.SubmitRequest) (
 	if err := VerifyResourceIdentity(expected, created); err != nil {
 		return provider.JobRef{}, err
 	}
+	if request.KnownJob.ID != "" && jobReference(created) != request.KnownJob {
+		return provider.JobRef{}, provider.ErrAttemptConflict
+	}
 	return jobReference(created), nil
 }
 
@@ -101,7 +115,7 @@ func (p *Provider) Observe(ctx context.Context, request provider.SubmitRequest) 
 			SubmissionToken: request.SubmissionToken, TaskID: request.TaskID, AttemptID: request.AttemptID,
 			TaskSpecDigest: request.TaskSpecDigest, ProfileID: request.ProfileID,
 			ProfileVersion: request.ProfileVersion, ProfileDigest: request.ProfileDigest,
-			Status: provider.StatusNotFound, ObservedAt: p.clock.Now().UTC(),
+			Job: request.KnownJob, Status: provider.StatusNotFound, ObservedAt: p.clock.Now().UTC(),
 		}, nil
 	}
 	if err != nil {
@@ -121,7 +135,7 @@ func (p *Provider) Cancel(ctx context.Context, request provider.SubmitRequest) (
 			SubmissionToken: request.SubmissionToken, TaskID: request.TaskID, AttemptID: request.AttemptID,
 			TaskSpecDigest: request.TaskSpecDigest, ProfileID: request.ProfileID,
 			ProfileVersion: request.ProfileVersion, ProfileDigest: request.ProfileDigest,
-			Status: provider.StatusNotFound, ObservedAt: p.clock.Now().UTC(),
+			Job: request.KnownJob, Status: provider.StatusNotFound, ObservedAt: p.clock.Now().UTC(),
 		}, nil
 	}
 	if err != nil {
@@ -166,6 +180,21 @@ func (p *Provider) Cleanup(ctx context.Context, request provider.SubmitRequest) 
 	}
 	resource, err := p.api.GetRun(ctx, p.config.Namespace, p.config.Kind, expected.Metadata.Name)
 	if errors.Is(err, ErrNotFound) {
+		if request.KnownJob.ID == "" {
+			return ErrCleanupNotReady
+		}
+		uid, ok := strings.CutPrefix(request.KnownJob.ID, expected.Metadata.Namespace+"/"+expected.Metadata.Name+":")
+		if !ok || uid == "" || strings.ContainsAny(uid, "/:") {
+			return provider.ErrAttemptConflict
+		}
+		expected.Metadata.UID = uid
+		confirmed, err := p.api.ConfirmDeletion(ctx, expected)
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			return ErrCleanupPending
+		}
 		return nil
 	}
 	if err != nil {

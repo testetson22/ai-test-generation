@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -14,8 +15,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "src"))
 from atg.adapters.persistence.sqlite_run_state import SQLiteRunStateStore  # noqa: E402
 from atg.application.admission import AdmissionRequest, AdmissionResult, CheckResult  # noqa: E402
 from atg.component.run_state_server import MAX_REQUEST_BYTES, create_server  # noqa: E402
-from atg.domain.run_state import DuplicateEventError, InvalidTransitionError, RunEvent, StaleEventError  # noqa: E402
+from atg.domain.run_state import DuplicateEventError, InvalidTransitionError, RunEvent, RunState, StaleEventError  # noqa: E402
 from atg.domain.schema_validation import ContractValidationError  # noqa: E402
+from tests.unit.test_generation import create_repository, prepare_coding_store  # noqa: E402
 
 
 def admit_event(run_id="run-1", event_id="event-1", revision=0):
@@ -43,6 +45,56 @@ def record_admission(store, event):
 
 
 class SQLiteRunStateComponentTests(unittest.TestCase):
+    def test_generic_execution_checkpoint_cannot_advance_persisted_coding_run(self):
+        with TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            create_repository(root)
+            store, _ = prepare_coding_store(root)
+            self.addCleanup(store.close)
+            before = store.get_run("run-1")
+            events = tuple(store.events("run-1"))
+            for kind in ("execution_review", "quality_review"):
+                with self.subTest(kind=kind):
+                    with self.assertRaisesRegex(InvalidTransitionError, "requires the durable execution controller"):
+                        store.apply(RunEvent(
+                            f"untrusted-{kind}", "run-1", "checkpoint_created", before.revision,
+                            "2099-11-09T17:00:04Z", checkpoint_id=f"cp-{kind}", checkpoint_kind=kind,
+                            artifact_id="unverified-result", artifact_digest="sha256:" + "a" * 64,
+                        ))
+                    self.assertEqual(store.get_run("run-1"), before)
+                    self.assertEqual(tuple(store.events("run-1")), events)
+
+    def test_historical_execution_checkpoint_replays_but_new_approval_is_blocked(self):
+        with TemporaryDirectory() as directory:
+            root = pathlib.Path(directory) / "repository"
+            root.mkdir()
+            create_repository(root)
+            database = str(pathlib.Path(directory) / "legacy.sqlite3")
+            store, _ = prepare_coding_store(root, database)
+            self.addCleanup(store.close)
+            state = store.get_run("run-1")
+            historical = RunEvent(
+                "legacy-execution-checkpoint", "run-1", "checkpoint_created", state.revision,
+                "2099-11-09T17:00:04Z", checkpoint_id="legacy-cp", checkpoint_kind="execution_review",
+            )
+            original = RunState.apply
+            # Seed the journal using the pre-ledger transition semantics.
+            with patch.object(RunState, "apply", lambda state, event: original(state, event, _replay=True)):
+                store.apply(historical)
+            store.close()
+            restarted = SQLiteRunStateStore(database)
+            self.addCleanup(restarted.close)
+            self.assertEqual(restarted.replay("run-1").status, "execution_review")
+            self.assertTrue(restarted.apply(historical).duplicate)
+            revision = restarted.get_run("run-1").revision
+            with self.assertRaisesRegex(InvalidTransitionError, "requires the durable execution controller"):
+                restarted.apply(RunEvent(
+                    "new-unverified-approval", "run-1", "decision_recorded", revision,
+                    "2099-11-09T17:00:05Z", checkpoint_id="legacy-cp", decision="approved",
+                    decision_id="decision-1", actor_id="reviewer", actor_role="owner", authorization_ref="policy-1",
+                ))
+            self.assertEqual(restarted.replay("run-1").revision, revision)
+
     def test_checkpoint_id_cannot_be_reused_by_another_run(self):
         store = SQLiteRunStateStore()
         for run_id in ("run-1", "run-2"):
@@ -231,6 +283,39 @@ class RunStateHTTPComponentTests(unittest.TestCase):
     def next_event_timestamp(self):
         """Return a current timestamp safely after the admission transition."""
         return (datetime.now(timezone.utc) + timedelta(seconds=1)).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    def test_generic_execution_event_http_ingress_fails_closed(self):
+        root = pathlib.Path(self.directory.name) / "repository"
+        root.mkdir()
+        create_repository(root)
+        store, _ = prepare_coding_store(root, self.database)
+        state = store.get_run("run-1")
+        event_count = len(tuple(store.events("run-1")))
+        store.close()
+        event = RunEvent(
+            "untrusted-execution-review", "run-1", "checkpoint_created", state.revision,
+            "2099-11-09T17:00:04Z", checkpoint_id="cp-untrusted", checkpoint_kind="execution_review",
+            artifact_id="unverified-result", artifact_digest="sha256:" + "a" * 64,
+        )
+        with self.assertRaises(HTTPError) as raised:
+            self.request("POST", "/runs/run-1/events", {"contract": "atg.run_event", "version": "1.0", **event.__dict__})
+        self.assertEqual(raised.exception.code, 409)
+        self.assertEqual(json.loads(raised.exception.read()), {
+            "error": "execution advancement requires the durable execution controller",
+        })
+        raised.exception.close()
+        with self.assertRaises(HTTPError) as raised:
+            self.request("POST", "/runs/run-1/events", {
+                "contract": "atg.run_event", "version": "1.0", **event.__dict__, "_replay": True,
+            })
+        self.assertEqual(raised.exception.code, 400)
+        self.assertEqual(json.loads(raised.exception.read()), {"error": "invalid event payload"})
+        raised.exception.close()
+        _, after = self.request("GET", "/runs/run-1")
+        self.assertEqual(after["status"], "coding")
+        self.assertEqual(after["revision"], state.revision)
+        _, journal = self.request("GET", "/runs/run-1/events")
+        self.assertEqual(len(journal["events"]), event_count)
 
     def test_process_boundary_creates_applies_and_reads_run_state(self):
         status, state = self.request(

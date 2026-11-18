@@ -79,6 +79,23 @@ image identities, namespace/service-account policy, artifact retention behavior,
 and observed cancellation/termination and teardown guarantees. These requirements
 must be verified before live adapter composition or workload execution.
 
+## Evidence And Replay Gates
+
+The Python reference's generic event endpoint cannot authorize execution or
+substitute caller-supplied artifact metadata for accepted execution results.
+New execution start/completion events, execution/quality review checkpoints,
+approvals of those reviews, and positive quality completion fail closed until a
+trusted execution-ledger bridge is implemented. Historical journals retain their
+original replay semantics and exact duplicate protection; replay compatibility
+does not authorize new advancement through those checkpoints.
+
+The provisional provider carries the persisted job UID into reconciliation and
+checks it before cancellation or deletion. Resource absence alone is neither
+termination nor cleanup confirmation: cleanup requires an independent API check
+that the identified run and its owned workload resources are gone, even after
+the run object disappears or the adapter restarts. These offline port guarantees
+still require validation in any future concrete platform client.
+
 ## Reconsideration Conditions
 
 Revisit a choice only with concrete evidence that it blocks a required supported

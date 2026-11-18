@@ -801,7 +801,7 @@ class SQLiteRunStateStore:
         state = RunState.initial(run_id)
         for row in event_rows:
             event = RunEvent(**json.loads(row["payload_json"]))
-            state = state.apply(event).state
+            state = state.apply(event, _replay=True).state
         if state.revision != snapshot.revision:
             raise RuntimeError("run snapshot and event journal diverged")
         if state.revision and state.to_document() != snapshot.to_document():

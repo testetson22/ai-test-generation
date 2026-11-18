@@ -109,6 +109,57 @@ func TestRenderBindsDifferentAttemptsToDifferentResources(t *testing.T) {
 	}
 }
 
+func TestRenderedSpecDigestCanonicalizesNestedObjectsWithoutRoundingNumbers(t *testing.T) {
+	tests := []struct {
+		name   string
+		first  string
+		second string
+		equal  bool
+	}{
+		{name: "recursive key ordering", first: `{"nested":{"a":[{"x":1,"y":{"p":2,"q":3}}],"b":true}}`, second: `{"nested":{"b":true,"a":[{"y":{"q":3,"p":2},"x":1}]}}`, equal: true},
+		{name: "cancellation field", first: `{"nested":{"a":1}}`, second: `{"status":"Cancelled","nested":{"a":1}}`, equal: true},
+		{name: "nested cancellation field", first: `{"nested":{"status":"Running"}}`, second: `{"nested":{"status":"Cancelled"}}`},
+		{name: "changed nested value", first: `{"nested":{"a":[{"x":1}]}}`, second: `{"nested":{"a":[{"x":2}]}}`},
+		{name: "large integer precision", first: `{"nested":{"number":9007199254740992}}`, second: `{"nested":{"number":9007199254740993}}`},
+		{name: "decimal precision", first: `{"nested":{"number":0.123456789012345678901}}`, second: `{"nested":{"number":0.123456789012345678902}}`},
+		{name: "large exponent", first: `{"nested":{"number":1e1000,"other":null}}`, second: `{"nested":{"other":null,"number":1e1000}}`, equal: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			first, second := renderedSpecDigest([]byte(test.first)), renderedSpecDigest([]byte(test.second))
+			if first == "" || second == "" || (first == second) != test.equal {
+				t.Fatalf("digests=%q,%q equal=%t, want equal=%t", first, second, first == second, test.equal)
+			}
+		})
+	}
+}
+
+func TestRenderedSpecDigestRejectsDuplicateKeysAndMalformedJSON(t *testing.T) {
+	for _, spec := range []string{
+		`{"taskRef":{},"taskRef":{}}`,
+		`{"nested":{"name":"first","name":"second"}}`,
+		`{"nested":[{"name":"same","\u006eame":"same"}]}`,
+		`{"status":"Cancelled","status":"Running","nested":{}}`,
+		`{"nested":[1,2}`, `{"nested":{}`, `{} {}`, `null`, `[]`,
+	} {
+		t.Run(spec, func(t *testing.T) {
+			if digest := renderedSpecDigest([]byte(spec)); digest != "" {
+				t.Fatalf("ambiguous or invalid spec has digest %q", digest)
+			}
+			expected, err := Render(validConfig(TaskRunKind, "atg-worker"), validRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := expected
+			actual.Metadata.UID, actual.Metadata.ResourceVersion = "uid-1", "rv-1"
+			actual.Spec = json.RawMessage(spec)
+			if err := VerifyResourceIdentity(expected, actual); err == nil {
+				t.Fatal("ambiguous or invalid spec identity accepted")
+			}
+		})
+	}
+}
+
 func validConfig(kind RunKind, definition string) Config {
 	return Config{
 		Kind: kind, Namespace: "atg-test", DefinitionName: definition,
