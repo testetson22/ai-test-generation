@@ -9,13 +9,12 @@ Test Generation (ATG) lifecycle:
 Analyze -> Plan -> Code -> Execute
 ```
 
-The ATG design is intended to replace the SSC demo's test-generation pipeline.
-SSC is an initial deployment and execution host, not the source of ATG
+The ATG design can replace a legacy demo's test-generation pipeline as a
+compatibility exercise. The demo's naming and environment do not define ATG
 contracts or architecture.
 
 ## Related Repositories
 
-- SSC demo: https://github.com/testetson22/ssc-demo
 - ATG research: https://github.com/project-lightpath/ai-test-generation-research
 
 Update these references if the repository locations or ownership change.
@@ -37,7 +36,7 @@ once the upstream ownership and format are confirmed.
 - `tests/`: schema, contract-integrity, state-machine, persistence, HTTP, and
   component tests.
 - `scripts/`: contract validation and schema publication tools.
-- `deploy/`: SSC-hosted replacement deployment guidance.
+- `deploy/`: development-hosted test-generation integration guidance.
 - `docs/`: architecture and lifecycle decisions.
 
 Keep the reference and production components in this repository for now. The

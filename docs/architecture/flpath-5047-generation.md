@@ -221,10 +221,13 @@ Before treating 5047 as locally complete:
 2. **Complete:** the bounded, symlink-safe materialization adapter applies only
    canonical patches into configured workspaces and verifies patch/base/result
    content digests.
-3. **Complete:** `SscTektonCompatibilityResult` is an
-   optional adapter output (`TESTS_ADDED`, `PR_URL`, `RUN_REF`, `EVIDENCE_REF`,
-   terminal status). Keep canonical ATG records authoritative and do not make
-   Tekton mandatory or select it by implementing the projection.
+3. **Complete:** `PipelineCompatibilityResult` is an
+   optional adapter output. It mirrors legacy pipeline results
+   (`CHAINS-GIT_URL`, `CHAINS-GIT_COMMIT`, decimal `TESTS_ADDED` count, and
+   `PR_URL`) and adds optional ATG references (`RUN_REF`, `EVIDENCE_REF`,
+   terminal status). The generation Task's `ATTEMPTS` and `LAST_ERROR` are
+   separate task-level results. Keep canonical ATG records authoritative and do
+   not make Tekton mandatory or select it by implementing the projection.
 4. **Complete:** generation starts visibly before candidate output; attempts
     persist sequentially and resume after restart; request keys and material
     inputs are bound; per-subject test digests and an integrity-checked
@@ -239,7 +242,7 @@ The remaining integration after the 5050 decision is to add the selected
 generator adapter and consume the upstream target-profile validation adapter
 behind these ports. No authoritative Java 21/Quarkus fixture or approved
 validator command profile is currently published in the checked-out sources;
-the SSC Java 17/Spring profile is demo-only. 5047 therefore keeps unsupported
+the Java 17/Spring profile is limited to the legacy demo. 5047 therefore keeps unsupported
 Java/framework checks inconclusive rather than inventing a profile.
 5050 can compare whole-stack harness options against the same `GenerationPort`,
 `ValidationPort`, approved plan, deterministic fixture, and persisted result.
@@ -260,7 +263,12 @@ manifest, while 5049 evaluates execution evidence and quality outcomes.
 - Allowed paths are derived from Analyze's discovered test inventory, persisted on the approved plan, and enforced against both diff headers and materialized file paths.
 - Model, tool, and worker identities are required by the local domain and successful-generation schema projection.
 - Every repair has an attempt document and two content-addressed artifacts (patch and materialized tests).
-- Tekton compatibility: `TESTS_ADDED` + `EVIDENCE_REF` emission is TG-6 (FLPATH-5048) responsibility; 5047 only ensures patch is materializable at that digest.
+- Legacy pipeline compatibility: the generation adapter projects `TESTS_ADDED` as the count
+  of changed test files and preserves the source URL/commit and PR URL fields;
+  `RUN_REF`, `EVIDENCE_REF`, and terminal status are additive ATG references.
+  `ATTEMPTS`/`LAST_ERROR` remain generation-Task results. FLPATH-5048 owns the
+  pipeline-level execution evidence; 5047 keeps canonical patch/materialization
+  artifacts authoritative.
 
 ## 14. Validation commands
 

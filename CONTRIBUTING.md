@@ -12,7 +12,7 @@ Read `docs/architecture/repository-layout.md` and `docs/contributor/parallel-pat
 - Use mocks, simulators, deterministic fakes, replay fixtures, or local containers where the boundary is meaningful.
 - Real platform integration is tested separately from component validation.
 - Repository content, generated code, credentials, and external descriptions are untrusted inputs.
-- Temporary SSC forks and experiments cannot become hidden production dependencies.
+- Temporary demo forks and experiments cannot become hidden production dependencies.
 - Keep reference and production components in this repository for now, with the
   component/build divisions in `docs/architecture/repository-layout.md`.
 - New buildable components include independent dependency/build manifests,

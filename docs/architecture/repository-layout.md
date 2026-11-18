@@ -79,7 +79,7 @@ sharing an existing deployment.
 | Python reference | Its installable package/CLI and public reference interfaces, consuming declared contract assets | Production reliance on the reference source tree, development database, or process |
 | Control component | Versioned task/attempt, approval, provider-operation, and result/artifact interfaces; explicit persistence adapter | Agent framework state or another component directly writing controller tables |
 | Agent runtime/harness adapters | Authorized task specification and normalized outputs/failures/usage/artifact references | Framework graphs/checkpoints/SDK types, hidden retries, or model secrets in workload execution |
-| Repository worker and profiles | Task intent, approved profile/image identity, independent subject inputs, and execution/evidence manifests | Host paths, shared writable workspaces, agent/controller credentials, or an SSC checkout dependency |
+| Repository worker and profiles | Task intent, approved profile/image identity, independent subject inputs, and execution/evidence manifests | Host paths, shared writable workspaces, agent/controller credentials, or a demo checkout dependency |
 | Provider adapters | Declared submit/observe/reconcile/cancel/cleanup capabilities and conformance cases | Platform resource objects becoming canonical lifecycle state; a separate service is not required |
 | Deployment composition | Released images/packages/profile artifacts, configuration and secret references, supported-version matrix | Source-tree mounts, undeclared root build steps, or contract/state semantics embedded only in deployment scripts |
 
@@ -139,7 +139,7 @@ direction, not a claim that production modules or deployments already exist.
 | Control component | API/application layer, durable task/attempt ledger, approval and result acceptance, dispatch, retry scheduling, cancellation, and reconciliation | Initial production service boundary; API and reconciler may share a module/deployment |
 | Agent task runner | Bounded model/tool execution for applicable Analyze, Plan, and Code tasks, with attributable outputs and usage | Separate runtime when dependency, credential, scaling, or language needs justify it; Pydantic AI is a candidate, not selected |
 | Repository workload worker | Immutable source preparation, exact approved-test materialization, build/collection/execution, bounded evidence collection, and teardown | Ephemeral isolated workers with task-specific profiles; independent base and candidate instances |
-| Execution-provider adapter | Submit, observe/reconcile, cancel, and clean up jobs through the selected platform | Normally an adapter, not another required standalone service; Tekton remains a candidate informed by SSC |
+| Execution-provider adapter | Submit, observe/reconcile, cancel, and clean up jobs through the selected platform | Normally an adapter, not another required standalone service; Tekton remains a candidate informed by prior demo patterns |
 | State and artifact storage | Durable task/event/result records plus content-addressed artifacts, access controls, and retention | Integrate backing stores; do not invent bespoke storage services or assume reference SQLite is the production database |
 | Quality/differential gates | Deterministic evaluation of generated tests and accepted execution evidence | Application/library boundary for FLPATH-5049, not a required extra service |
 
@@ -178,13 +178,13 @@ Implement the smallest execution vertical slice in this order:
 2. Build the control service's durable ledger, exclusive claims, dispatch,
    reconciliation, retry scheduling, and cancellation, using fakes only in tests.
 3. Implement the repository workload worker and one explicitly chosen provider
-   adapter, reusing SSC patterns only after verifying the required safety and
+   adapter, reusing demo patterns only after verifying the required safety and
    evidence relationships. Consume the approved generation handoff, not the
    Python reference's private storage.
 4. Integrate the selected agent harness behind its task boundary rather than
    making the controller depend on framework-specific types. The execution slice
    can start from persisted approved artifacts without selecting a live generator.
-5. Onboard SSC's Java 17/Spring Boot application as the first supported execution
+5. Onboard the Java 17/Spring Boot sample application as the first supported execution
    profile. Pin the application independently of its playground; demonstrate
    focused tests, isolated subject controls, evidence/recovery and cleanup, then
    characterize a distinct base/candidate comparison without inventing a fix.
@@ -196,7 +196,7 @@ Application identity, build/test commands, toolchains, test/report selection and
 application setup belong in approved profiles/framework adapters. Controller
 state/retry logic and provider job semantics remain target-independent. The first
 real profile establishes the mechanism; a second framework demonstrates portability.
-Quarkus availability gates that coverage, not useful real execution on SSC's app.
+Quarkus availability gates that coverage, not useful real execution on the sample app.
 No approved ATG execution profile for either application is supplied by this plan.
 
 Service/runner language, persistence technology, platform, agent harness, and
@@ -213,10 +213,10 @@ and adapter-level platform fixtures as described in the
 These are planned test/development substitutes, not production selections or
 implemented production modules, and do not validate either spike's recommendation.
 
-SSC and the temporary `ssc-demo-fp` playground inform implementation, not these
-interfaces. The selected SSC application profile is a supported integration target,
+The legacy demo and its temporary playground inform implementation, not these
+interfaces. The selected application profile is a supported integration target,
 not a dependency on that playground or a claim of upstream Quarkus coverage. See the
-[SSC development-harness assessment](../../deploy/development-harness/README.md)
+[development-harness assessment](../../deploy/development-harness/README.md)
 for inspected snapshots, reuse candidates, and limitations.
 
 ## Ownership Terms
@@ -255,7 +255,7 @@ explicitly; do not infer them from architecture or invent unassigned operators.
 | Workstream | Primary paths | Integration point |
 |---|---|---|
 | VI: VEX and policy input | `contracts/`, future production adapters, input fixtures | Versioned VPE/VEX and policy contracts |
-| TF: target and framework | future production adapters, target metadata | Per-application profile/framework boundary; SSC/Spring first integration, Java 21/Quarkus portability coverage |
+| TF: target and framework | future production adapters, target metadata | Per-application profile/framework boundary; Java 17/Spring sample first integration, Java 21/Quarkus portability coverage |
 | TG: core pipeline | `src/atg/domain/`, `src/atg/application/`, `src/atg/workflow/`, `src/atg/gates/`, `src/atg/provenance/` | Driver-neutral lifecycle and evidence contracts |
 | TG: production runtime | `services/<component>/`, `workers/<profile>/` when implemented | Explicit role interfaces, native builds, worker profiles, and shared conformance |
 | TG-S1/S2/S3 | `experiments/`, replay tests, architecture docs | Spike reports and port/ownership recommendations |

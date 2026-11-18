@@ -1,20 +1,28 @@
-# SSC Development Harness
+# Test-Generation Development Harness
 
-SSC supplies temporary development/execution-host material, not the source of
-ATG test contracts or architecture. The ATG implementation replaces the SSC
-demo's `agentic-test-generation` pipeline and `ai-generate-tests` task. The
-availability of an SSC playground does not select Tekton as the production
-provider or make that environment an integration prerequisite.
+The legacy demo supplies temporary development/execution-host material, not the
+source of ATG test contracts or architecture. The ATG implementation replaces
+the demo's existing test-generation pipeline and generation task. The available
+playground does not select Tekton as the production provider or make that
+environment an integration prerequisite.
+
+The immediate goal is a development-only modularity proof against the existing
+demo flow, not the VPE-driven ATG MVP. VPE/VEX context is still in active
+development and is not a prerequisite for this demo. The current development
+composition is Go control plus Tekton-backed workers, with Tekton confined to the
+provider boundary and subject to FLPATH-5051 findings. Do not deploy it to the
+live cluster until the new demo is aligned with the original flow and the
+target environment is confirmed.
 
 ## Current Playground
 
-As of 2026-11-17, `ssc-demo-fp` is available locally for experiments. It is
+As of 2026-11-17, a temporary demo fork was available locally for experiments. It is
 temporary; its location and availability are expected to change. Keep machine
 paths and access details in ignored local context, never in build dependencies,
 canonical contracts, fixtures, or committed credentials.
 
-The inspected `ssc-demo-fp` checkout was clean at
-`79cd122f776b6f85e14f5dd52ffc2318cd44e348`. The earlier SSC baseline was
+The inspected temporary fork was clean at
+`79cd122f776b6f85e14f5dd52ffc2318cd44e348`. The earlier demo baseline was
 `80615e380cac6fcfba8c4b92b882686d855e4fef`. These are source-inspection snapshots,
 not evidence of live deployment health or proof that either snapshot is an
 approved execution profile. Reinspect and record the new source/configuration
@@ -22,21 +30,22 @@ identity when using a replacement playground; do not depend on these snapshots
 at service startup.
 
 The fork adds `cluster/` operation helpers and a unit-generation CPU-request
-adjustment; the inspected core task/pipeline/image flow retains the SSC design.
+adjustment; the inspected core task/pipeline/image flow retains the demo design.
 Its action helper launches the existing demo-compatible generator, not a
 conformant ATG controller/worker flow. Historical cluster notes are observations,
 not current readiness evidence.
 
 ## First Supported Application Profile
 
-FLPATH-5048 will first exercise profile-driven execution against SSC's application,
-`lzspangler/spring-boot-example-application` (Java 17/Spring Boot), independently
-of where `ssc-demo-fp` is checked out or deployed. This is a first-class
-development/integration target, not a disposable SSC-specific controller path.
+FLPATH-5048 will first exercise profile-driven execution against the sample
+application, `lzspangler/spring-boot-example-application` (Java 17/Spring Boot),
+independently of where the temporary demo fork is checked out or deployed. This
+is a first-class development/integration target, not a demo-specific controller
+path.
 The upstream Java 21/Quarkus target becomes a separate portability/coverage
 milestone; retain both profiles once implemented.
 
-SSC imports the application into GitLab and commonly selects moving `main`.
+The demo imports the application into GitLab and commonly selects moving `main`.
 Resolve and pin the actual application commit and dependency states; the
 playground infrastructure SHA is not the application SHA. VPE's checked-in
 analysis profile names upstream commit
@@ -48,17 +57,20 @@ Implement and authorize a versioned execution profile with pinned tool/image and
 dependency identities, commands, focused test selection, application setup/reset,
 reports, execution limits, credential/network policy and artifact requirements.
 Keep Spring health endpoints and Maven report paths behind profile/framework
-adapters, not controller lifecycle or provider logic. No such profile is created
-or approved merely by this document.
+adapters, not controller lifecycle or provider logic. Each run binds the
+profile ID, version, and SHA-256 digest from server configuration; callers cannot
+select or alter the profile. The development API remains disabled until that
+immutable identity is configured. No concrete profile is created or approved
+merely by this document.
 
 Start with focused baseline tests and independent same-subject controls, then an
 explicit immutable candidate and characterized comparison. Same-subject controls
-prove execution relationships, not remediation. SSC's optional synthetic artifact
+prove execution relationships, not remediation. The demo's optional synthetic artifact
 seed may publish identical bytes under a "fixed" version label; coordinates alone
 cannot establish a behavioral fix. Quarkus coverage must later reuse the same
 controller lifecycle/retry/recovery logic, though its profile/adapters may differ.
 
-## Reuse From SSC
+## Reuse From Demo Environment
 
 The replacement may reuse the harness infrastructure:
 
@@ -73,7 +85,7 @@ review, evidence, or outcome contracts.
 
 ## Inspected Reuse Boundaries
 
-Paths in this table are relative to the inspected SSC/`ssc-demo-fp` checkout.
+Paths in this table are relative to the inspected demo checkout.
 Use them as implementation references; do not import the checkout at runtime.
 
 | Element | Useful implementation material | Required ATG change or limitation |
@@ -83,25 +95,79 @@ Use them as implementation references; do not import the checkout at runtime.
 | `pipelines/tasks/ai-generate-tests*.yaml` | Agent invocation, scratch-copy workflow, bounded generation attempts, test copy-back | Separate agent task execution from repository workloads and their credentials; do not copy a combined credential-bearing shell task into production |
 | `pipelines/tasks/deploy-app-under-test.yaml`, `reset-app-under-test.yaml`, and `cleanup-app-under-test.yaml` | Run-derived application resources, service/readiness outputs, reset and teardown primitives | Keep Spring/actuator/in-memory-state behavior in profile/adapters; verify reset and cleanup; best-effort teardown is not a success guarantee |
 | `pipelines/images/` | Build/agent image recipes and writable-home patterns | Pin and approve images/toolchains for the first Spring profile; Java 17 execution is not evidence of Java 21/Quarkus coverage |
-| `cluster/ssc-demo-actions.sh` in the temporary fork | Local inspection and manual PipelineRun submission helpers | Playground operations only; not a durable task/attempt ledger, retry scheduler, or provider reconciliation contract |
+| Temporary fork's `cluster/` helpers | Local inspection and manual PipelineRun submission helpers | Playground operations only; not a durable task/attempt ledger, retry scheduler, or provider reconciliation contract |
 
 The observed flow uses one checkout, copies it into agent scratch, copies accepted
 changes back, and reruns Maven in the shared checkout. It does not materialize the
 same approved tests independently against immutable base and candidate subjects.
 Model credentials/Maven settings remain accessible in the generation step that
 runs repository code. Test verification primarily trusts command exit status,
-and there is no ATG report/log durability acknowledgement before cleanup.
+and there is no ATG report/log durability acknowledgement before cleanup. These
+are known limits of the compatibility baseline. Development-only credentials are
+permitted for the initial proof; credential isolation and production hardening
+are not prerequisites for it.
 
-Therefore the following still need implementation: controller-managed task and
-attempt records; stable launch/reconciliation identities; separated credentials
-and writable workspaces; enforced runtime limits; exact per-subject test evidence;
-durable artifact collection; and observable, retryable cancellation/cleanup.
-See [controller task requirements](../../docs/architecture/run-state.md#controller-task-ledger).
+## Current Modularity-Proof Flow
 
-## Replacement Flow
+The first replacement path should preserve the demo's purpose while separating
+the modules being demonstrated:
 
-The replacement entrypoint must implement the ATG lifecycle rather than wrap
-the old task result fields:
+```text
+Demo trigger/request
+  -> Go control component
+  -> generation worker adapter (existing demo agent behavior, replaceable)
+  -> generated patch/test artifacts
+  -> Go-controlled execution dispatch
+  -> Tekton test worker using the Java 17/Spring profile
+  -> demo evidence and pipeline compatibility result projection
+```
+
+The existing demo agent may be reused behind a generation-worker boundary; merely
+wrapping the old combined Task is not the proof. Maven test execution must be a
+separate profile-driven worker, and controller lifecycle/results must not depend
+on host-specific Task or PipelineRun objects. Preserve legacy result fields
+where needed (`TESTS_ADDED`, `PR_URL`, `RUN_REF`, `EVIDENCE_REF`) without making
+them the canonical ATG result model. Keep the Python reference out of the runtime
+composition.
+
+This development run demonstrates generation/test integration and modular
+handoffs only. It does not require VPE/VEX, Analyze/Plan durable approval,
+base/candidate differential execution, production credential isolation, or MVP
+sign-off evidence, and it must not claim those outcomes. Record the exact source,
+commands, selected tests, worker/profile identities, and available test reports
+so the proof can be reproduced and compared with the original demo behavior.
+
+The compatibility target is the original standalone unit-generation path, not
+the separate functional or integration pipelines:
+
+```text
+clone pinned source
+  -> optional signature verification
+  -> baseline Maven package
+  -> generation worker (scratch copy; bounded generate/verify attempts)
+  -> copy only changed src/test files to the shared workspace
+  -> Maven verify when TESTS_ADDED is nonzero
+  -> tests-only PR/MR when TESTS_ADDED is nonzero
+```
+
+The generation worker's per-candidate check is Maven `test` with a Surefire
+selector for changed test classes; the later pipeline check is a separate Maven
+`verify`. Preserve that distinction rather than replacing both with an
+unqualified command.
+
+The original Pipeline results are `CHAINS-GIT_URL`, `CHAINS-GIT_COMMIT`,
+`TESTS_ADDED`, and `PR_URL`. `TESTS_ADDED` is the count of changed test files,
+not their path list; `PR_URL` is empty when no PR/MR is created. The generation
+Task separately returns `ATTEMPTS` and `LAST_ERROR`; clone metadata also includes
+the resolved commit identity. A replacement may add `RUN_REF`, `EVIDENCE_REF`,
+and `terminal_status`, but those are ATG compatibility extensions, not original
+pipeline results. Canonical ATG manifests remain authoritative for paths,
+digests, test evidence, and lifecycle status.
+
+## Later MVP Flow
+
+The later conformant MVP entrypoint implements the full ATG lifecycle rather
+than treating the compatibility projection as its public result model:
 
 ```text
 request/admission
@@ -112,19 +178,21 @@ request/admission
   -> provenance/evidence publication
 ```
 
-The existing SSC slash-command trigger and pipeline name can be retained only
+The existing demo slash-command trigger and pipeline name can be retained only
 as a deployment migration mechanism. The resulting run must emit the ATG v1
 contracts, not `TESTS_ADDED`, `ATTEMPTS`, or `PR_URL` as its public result
 model.
 
 ## Migration Boundary
 
-If Tekton is selected, its adapter must accept the controller-authorized ATG task
-intent and return attributable provider observations and durable artifact
-references. The control component retains lifecycle/approval/retry authority;
-the adapter/provider performs delegated job operations. SSC Maven/artifact and
-SCM infrastructure may be reused only through explicit approved interfaces.
-Wrapping the old generator task and projecting its result fields is not enough.
+For the current development proof, the Tekton adapter accepts the Go control
+component's task/attempt intent and runs separate generation or test workers
+behind stable provider interfaces. It returns attributable observations and
+artifact references; it must not absorb controller lifecycle/retry authority.
+Existing Maven/artifact and SCM infrastructure may be reused through the demo adapter.
+The old generator task is a generation-worker implementation candidate, not the
+entire replacement path. Production/MVP migration still requires the later full
+ATG contracts and evidence gates.
 
 The FLPATH-5051 spike contributes responsibility/provider decision evidence, not
 production code. Its incomplete status need not block implementation: record a
@@ -183,3 +251,29 @@ New generic execution/quality advancement is intentionally rejected until a
 trusted execution-ledger bridge is available. Existing historical journals can
 still be replayed, but replay does not make their old checkpoint transitions
 available to new event submissions.
+
+## Offline Test-Generation Simulator
+
+With Go 1.26.2 and module dependencies available locally, run the simulator from
+the Go module directory without a database, repository checkout, Maven, Tekton,
+or a cluster:
+
+```bash
+cd services/control
+go run ./cmd/atg-testgen-sim -scenario success
+go run ./cmd/atg-testgen-sim -scenario retry
+go run ./cmd/atg-testgen-sim -scenario no-changes
+go run ./cmd/atg-testgen-sim -scenario unknown-outcome
+```
+
+The embedded `internal/testgensim/offline-profile.json` is synthetic metadata,
+not an executable Maven profile. The simulator hashes those exact embedded bytes
+and binds that digest to the simulated run. Deterministic in-memory workers return
+scripted outcomes to the real Go coordinator; Maven phase names are labels only,
+and the repository and change-request URLs use the reserved `example.invalid`
+domain. The simulator process makes no network or subprocess calls. Go's initial
+toolchain/module bootstrap is separate and must already be satisfied for a fully
+air-gapped build. All report evidence and results are synthetic and must not be
+treated as test, build, source, or provider evidence. This exercises
+orchestration and retry semantics only; it does not validate a real application
+profile or worker.

@@ -102,19 +102,23 @@ class PatchMaterializationPort(Protocol):
 
 
 @dataclass(frozen=True)
-class SscTektonCompatibilityResult:
+class PipelineCompatibilityResult:
     """Optional legacy-field projection; never replaces ATG canonical records."""
 
-    tests_added: tuple[str, ...]
-    pr_url: str | None
-    run_ref: str | None
-    evidence_ref: str | None
+    tests_added: int
+    chains_git_url: str
+    chains_git_commit: str
+    pr_url: str
+    run_ref: str
+    evidence_ref: str
     terminal_status: str
 
     def to_document(self) -> dict[str, object]:
-        """Return the bounded compatibility field names used by the SSC adapter."""
+        """Return legacy pipeline result names while preserving canonical artifacts."""
         return {
-            "TESTS_ADDED": list(self.tests_added),
+            "CHAINS-GIT_URL": self.chains_git_url,
+            "CHAINS-GIT_COMMIT": self.chains_git_commit,
+            "TESTS_ADDED": str(self.tests_added),
             "PR_URL": self.pr_url,
             "RUN_REF": self.run_ref,
             "EVIDENCE_REF": self.evidence_ref,

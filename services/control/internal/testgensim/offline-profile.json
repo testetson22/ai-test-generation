@@ -1,0 +1,7 @@
+{
+  "profile_id": "atg-offline-simulator",
+  "profile_version": "0.1.0",
+  "mode": "simulation-only",
+  "description": "Synthetic identity for scripted test-generation flow outcomes; not an executable application profile.",
+  "external_effects": false
+}

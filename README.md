@@ -12,7 +12,8 @@ process, image, or build. Production components must have explicit interfaces
 and independently runnable builds/tests; see the
 [component and build boundaries](docs/architecture/repository-layout.md).
 
-The current SSC demo and any forks are temporary development and compatibility material. They do not define the ATG architecture or authoritative Java target.
+The legacy demo and any forks are temporary development and compatibility
+material. They do not define the ATG architecture or authoritative Java target.
 
 ## Start Here
 
@@ -25,13 +26,13 @@ The current SSC demo and any forks are temporary development and compatibility m
 - `tests/README.md` - local, component, replay, and integration validation.
 - `experiments/README.md` - temporary harness and provider experiments.
 - `deploy/README.md` - development-harness and final-demo composition boundaries.
-- `deploy/development-harness/README.md` - SSC reuse assessment and temporary `ssc-demo-fp` playground boundaries.
+- `deploy/development-harness/README.md` - legacy demo reuse assessment and temporary playground boundaries.
 
 ## Current Target
 
 The ATG controller's initial production runtime is Go, independent of the Python
-reference and target application. Profile-driven execution starts with SSC's
-Java 17/Spring Boot application. The VPE/A&P-selected Java 21/Quarkus fixture is
+reference and target application. Profile-driven execution starts with the
+Java 17/Spring Boot sample application. The VPE/A&P-selected Java 21/Quarkus fixture is
 the second-profile portability milestone; it does not block first-target service
 development. See the
 [initial runtime boundary](docs/architecture/flpath-5048-runtime.md).

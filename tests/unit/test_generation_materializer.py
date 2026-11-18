@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "src"))
 
 from atg.adapters.generation.deterministic import FilesystemPatchMaterializer
-from atg.adapters.generation.compatibility import to_ssc_tekton_compatibility
+from atg.adapters.generation.compatibility import to_pipeline_compatibility
 from atg.domain.generation import (
     canonical_patch,
     compute_materialized_digest,
@@ -229,12 +229,33 @@ else:
                 "changed_files": ["tests/test_generated.py"],
             },
         }})()
-        projection = to_ssc_tekton_compatibility(
-            record, result, run_ref="taskrun-1", evidence_ref="artifact-generation-1"
+        projection = to_pipeline_compatibility(
+            record,
+            result,
+            chains_git_url="https://gitlab.example/project.git",
+            chains_git_commit="01a18a1b40e151ffcc1d7bef86bf335f87999750",
+            run_ref="taskrun-1",
+            evidence_ref="artifact-generation-1",
         ).to_document()
-        self.assertEqual(projection["TESTS_ADDED"], ["tests/test_generated.py"])
+        self.assertEqual(projection["TESTS_ADDED"], "1")
+        self.assertEqual(projection["CHAINS-GIT_URL"], "https://gitlab.example/project.git")
+        self.assertEqual(
+            projection["CHAINS-GIT_COMMIT"],
+            "01a18a1b40e151ffcc1d7bef86bf335f87999750",
+        )
         self.assertEqual(projection["RUN_REF"], "taskrun-1")
-        self.assertIsNone(projection["PR_URL"])
+        self.assertEqual(projection["PR_URL"], "")
+        self.assertEqual(projection["EVIDENCE_REF"], "artifact-generation-1")
+
+    def test_compatibility_projection_returns_zero_and_empty_pr_without_tests(self):
+        record = type("Record", (), {"manifest": {"status": "rejected"}})()
+
+        projection = to_pipeline_compatibility(record, None).to_document()
+
+        self.assertEqual(projection["TESTS_ADDED"], "0")
+        self.assertEqual(projection["PR_URL"], "")
+        self.assertEqual(projection["CHAINS-GIT_URL"], "")
+        self.assertEqual(projection["CHAINS-GIT_COMMIT"], "")
 
     def test_compatibility_projection_rejects_untrusted_paths_and_allowlists(self):
         subject = {"kind": "git-tree", "id": "candidate"}
@@ -277,7 +298,7 @@ else:
         )
         for result, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
-                to_ssc_tekton_compatibility(record, result)
+                to_pipeline_compatibility(record, result)
 
     def test_compatibility_projection_rejects_wrong_subject(self):
         result = MaterializationResult(
@@ -295,7 +316,7 @@ else:
             "materialized_test_digest": result.materialized_test_digest,
         }})()
         with self.assertRaisesRegex(ValueError, "workspace does not match"):
-            to_ssc_tekton_compatibility(record, result)
+            to_pipeline_compatibility(record, result)
 
     def test_compatibility_projection_rejects_digest_mismatch(self):
         result = MaterializationResult(
@@ -313,7 +334,7 @@ else:
             "materialized_test_digest": result.materialized_test_digest,
         }})()
         with self.assertRaisesRegex(ValueError, "differs from canonical generation"):
-            to_ssc_tekton_compatibility(record, result)
+            to_pipeline_compatibility(record, result)
 
 
 if __name__ == "__main__":

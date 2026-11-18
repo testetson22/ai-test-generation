@@ -1,4 +1,4 @@
-"""Optional SSC/Tekton compatibility projection for canonical ATG results."""
+"""Optional legacy pipeline compatibility projection for canonical ATG results."""
 
 from __future__ import annotations
 
@@ -6,23 +6,25 @@ from collections.abc import Mapping
 
 from atg.domain.digests import digests_equal
 from atg.domain.generation import validate_changed_files
-from atg.ports.generation import MaterializationResult, SscTektonCompatibilityResult
+from atg.ports.generation import MaterializationResult, PipelineCompatibilityResult
 
 
-def to_ssc_tekton_compatibility(
+def to_pipeline_compatibility(
     generation_record,
     materialization: MaterializationResult | None,
     *,
     pr_url: str | None = None,
+    chains_git_url: str | None = None,
+    chains_git_commit: str | None = None,
     run_ref: str | None = None,
     evidence_ref: str | None = None,
-) -> SscTektonCompatibilityResult:
+) -> PipelineCompatibilityResult:
     """Project optional legacy fields without changing the canonical record."""
     manifest = generation_record.manifest
     status = manifest.get("status")
     if status not in {"generated", "verified", "rejected", "inconclusive"}:
         raise ValueError("unsupported generation terminal status")
-    tests_added: tuple[str, ...] = ()
+    changed_test_count = 0
     if status in {"generated", "verified"}:
         if materialization is None:
             raise ValueError("successful compatibility result requires materialization")
@@ -72,14 +74,28 @@ def to_ssc_tekton_compatibility(
             raise ValueError("compatibility inventory differs from canonical handoff")
         if set(generation_changed) != set(canonical_changed):
             raise ValueError("generation inventory differs from canonical handoff")
-        tests_added = canonical_changed
-    for name, value in (("PR_URL", pr_url), ("RUN_REF", run_ref), ("EVIDENCE_REF", evidence_ref)):
-        if value is not None and (not isinstance(value, str) or len(value) > 2048):
+        changed_test_count = len(canonical_changed)
+    for name, value in (
+        ("PR_URL", pr_url),
+        ("CHAINS-GIT_URL", chains_git_url),
+        ("CHAINS-GIT_COMMIT", chains_git_commit),
+        ("RUN_REF", run_ref),
+        ("EVIDENCE_REF", evidence_ref),
+    ):
+        if value is not None and (
+            not isinstance(value, str)
+            or len(value) > 2048
+            or any(character in value for character in "\x00\r\n")
+        ):
             raise ValueError(f"{name} must be a bounded string")
-    return SscTektonCompatibilityResult(
-        tests_added=tests_added,
-        pr_url=pr_url,
-        run_ref=run_ref,
-        evidence_ref=evidence_ref,
+    if changed_test_count == 0 and pr_url:
+        raise ValueError("PR_URL must be empty when no tests were added")
+    return PipelineCompatibilityResult(
+        tests_added=changed_test_count,
+        chains_git_url=chains_git_url or "",
+        chains_git_commit=chains_git_commit or "",
+        pr_url=pr_url or "",
+        run_ref=run_ref or "",
+        evidence_ref=evidence_ref or "",
         terminal_status=str(status),
     )

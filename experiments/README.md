@@ -1,6 +1,6 @@
 # Experiments
 
-This directory contains temporary research and comparison work. Current candidates include the SSC Aider/Claude Code task, `ai-test-harness`, `fullsend-ai/test-creator`, internal test-plan tooling, direct SDKs, LangGraph, Pydantic AI, and bounded VVAH/evaluation experiments.
+This directory contains temporary research and comparison work. Current candidates include the legacy demo's Aider/Claude Code task, `ai-test-harness`, `fullsend-ai/test-creator`, internal test-plan tooling, direct SDKs, LangGraph, Pydantic AI, and bounded VVAH/evaluation experiments.
 
 Experiments may recommend reuse, fork, reproduction, or replacement. They must not become hidden runtime dependencies or change domain contracts to fit a candidate framework.
 
