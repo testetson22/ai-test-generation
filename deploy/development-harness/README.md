@@ -277,3 +277,22 @@ air-gapped build. All report evidence and results are synthetic and must not be
 treated as test, build, source, or provider evidence. This exercises
 orchestration and retry semantics only; it does not validate a real application
 profile or worker.
+
+## Analyze-Plan-Code Profile Candidate Simulation
+
+Run the Python reference phases against a temporary Java/Maven fixture and emit
+a partial execution-profile candidate with field-level artifact references and
+separate profile-approval and external-integration gaps:
+
+```bash
+PYTHONPATH=src PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m atg.component.profile_candidate_simulator
+```
+
+This invokes the actual local Analyze, Plan, and Code services, but uses a
+temporary repository, a fixture Maven metadata analyzer, a replayed generated
+test, and synthetic checkpoint decisions. The server is bound to loopback; it
+does not call a model, execute Maven, clone a repository, or contact an external
+provider. The phase decisions only exercise the phase gates and are explicitly
+not profile authorization. The output candidate is intentionally incomplete,
+fails the approved execution-profile schema, and is never dispatchable. Its
+facts describe the synthetic fixture, not the pinned sample application.
