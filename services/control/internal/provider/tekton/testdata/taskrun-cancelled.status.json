@@ -1,0 +1,18 @@
+{
+  "apiVersion": "tekton.dev/v1",
+  "kind": "TaskRun",
+  "metadata": {
+    "name": "atg-taskrun-cf18a22e39cd5bba19be060f",
+    "namespace": "atg-test",
+    "uid": "taskrun-uid-cancel",
+    "resourceVersion": "opaque-rv-41"
+  },
+  "spec": { "status": "Cancelled" },
+  "status": {
+    "startTime": "2026-11-18T00:00:01Z",
+    "completionTime": "2026-11-18T00:00:05Z",
+    "conditions": [
+      { "type": "Succeeded", "status": "False", "reason": "TaskRunCancelled", "lastTransitionTime": "2026-11-18T00:00:05Z" }
+    ]
+  }
+}

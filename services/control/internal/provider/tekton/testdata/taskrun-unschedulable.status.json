@@ -1,0 +1,15 @@
+{
+  "apiVersion": "tekton.dev/v1",
+  "kind": "TaskRun",
+  "metadata": {
+    "name": "atg-taskrun-cf18a22e39cd5bba19be060f",
+    "namespace": "atg-test",
+    "uid": "taskrun-uid-pending",
+    "resourceVersion": "opaque-rv-11"
+  },
+  "status": {
+    "conditions": [
+      { "type": "Succeeded", "status": "Unknown", "reason": "PodUnschedulable", "lastTransitionTime": "2026-11-18T00:00:05Z" }
+    ]
+  }
+}

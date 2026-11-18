@@ -157,11 +157,14 @@ without treating a complete cluster as a prerequisite for controller work:
   authorization rejection, pending/unschedulable work, interrupted status/watch,
   stale/duplicate observations, timeout, cancellation, and cleanup failure.
 
-These tests do not establish live RBAC, admission behavior, workspace/credential
-isolation, egress/resource enforcement, actual cancellation/teardown, or artifact
-survival after pruning. Those require integration on a recorded platform/profile.
-No TaskRun/PipelineRun template or Tekton adapter is implemented by this document.
-The same provider conformance contract must remain usable by a non-Tekton adapter.
+The Go control module now contains a provisional `tekton.dev/v1` TaskRun/PipelineRun
+renderer, identity-bound observation normalizer, and a provider adapter tested
+against deterministic API fakes and status fixtures. This is not a cluster API
+client or production provider selection. These tests do not establish live RBAC,
+admission behavior, workspace/credential isolation, egress/resource enforcement,
+actual cancellation/teardown, or artifact survival after pruning. Those require
+integration on a recorded platform/profile. The same provider conformance contract
+must remain usable by a non-Tekton adapter.
 
 ## Local Component
 

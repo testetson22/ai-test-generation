@@ -82,10 +82,7 @@ func TestPostgresPairCreationClaimFencingAndObservationOrdering(t *testing.T) {
 	if err != nil || firstPoll == nil || firstPoll.Action != execution.ActionObserve {
 		t.Fatalf("poll claim = %#v, err %v", firstPoll, err)
 	}
-	pendingObservation := provider.Observation{
-		SubmissionToken: firstPoll.SubmissionToken, Job: provider.JobRef{ID: "job-1"},
-		Sequence: 1, Status: provider.StatusPending, ObservedAt: now.Add(17 * time.Second),
-	}
+	pendingObservation := testObservation(t, *firstPoll, 1, provider.StatusPending, provider.JobRef{ID: "job-1"}, now.Add(17*time.Second))
 	if err := store.RecordObservation(ctx, *firstPoll, pendingObservation, now.Add(17*time.Second), 5*time.Second); err != nil {
 		t.Fatalf("record pending observation: %v", err)
 	}
@@ -94,10 +91,7 @@ func TestPostgresPairCreationClaimFencingAndObservationOrdering(t *testing.T) {
 	if err != nil || runningPoll == nil {
 		t.Fatalf("running poll claim = %#v, err %v", runningPoll, err)
 	}
-	runningObservation := provider.Observation{
-		SubmissionToken: runningPoll.SubmissionToken, Job: provider.JobRef{ID: "job-1"},
-		Sequence: 2, Status: provider.StatusRunning, ObservedAt: now.Add(23 * time.Second),
-	}
+	runningObservation := testObservation(t, *runningPoll, 2, provider.StatusRunning, provider.JobRef{ID: "job-1"}, now.Add(23*time.Second))
 	if err := store.RecordObservation(ctx, *runningPoll, runningObservation, now.Add(23*time.Second), 5*time.Second); err != nil {
 		t.Fatalf("record running observation: %v", err)
 	}
@@ -119,10 +113,7 @@ func TestPostgresPairCreationClaimFencingAndObservationOrdering(t *testing.T) {
 	if err != nil || completedPoll == nil {
 		t.Fatalf("completion poll claim = %#v, err %v", completedPoll, err)
 	}
-	completed := provider.Observation{
-		SubmissionToken: completedPoll.SubmissionToken, Job: provider.JobRef{ID: "job-1"},
-		Sequence: 4, Status: provider.StatusCompleted, ObservedAt: now.Add(29 * time.Second),
-	}
+	completed := testObservation(t, *completedPoll, 4, provider.StatusCompleted, provider.JobRef{ID: "job-1"}, now.Add(29*time.Second))
 	if err := store.RecordObservation(ctx, *completedPoll, completed, now.Add(29*time.Second), 5*time.Second); err != nil {
 		t.Fatalf("record completed observation: %v", err)
 	}
@@ -582,10 +573,7 @@ func TestPostgresNotFoundObservationDoesNotAuthorizeAnotherAttempt(t *testing.T)
 	if err != nil || reconcile == nil || reconcile.Action != execution.ActionObserve {
 		t.Fatalf("reconciliation claim = %#v, err %v", reconcile, err)
 	}
-	if err := store.RecordObservation(ctx, *reconcile, provider.Observation{
-		SubmissionToken: reconcile.SubmissionToken,
-		Sequence:        1, Status: provider.StatusNotFound, ObservedAt: now.Add(6 * time.Second),
-	}, now.Add(6*time.Second), 5*time.Second); err != nil {
+	if err := store.RecordObservation(ctx, *reconcile, testObservation(t, *reconcile, 1, provider.StatusNotFound, provider.JobRef{}, now.Add(6*time.Second)), now.Add(6*time.Second), 5*time.Second); err != nil {
 		t.Fatalf("record provider not-found observation: %v", err)
 	}
 	secondReconcile, err := store.ClaimNext(ctx, "controller-3", providerID, now.Add(12*time.Second), 10*time.Second, 5*time.Second)
@@ -777,6 +765,20 @@ func marshalSpecs(t *testing.T, base, candidate execution.TaskSpec) ([]byte, []b
 		t.Fatal(err)
 	}
 	return baseBytes, candidateBytes
+}
+
+func testObservation(t *testing.T, claim execution.Claim, sequence uint64, status provider.Status, job provider.JobRef, observedAt time.Time) provider.Observation {
+	t.Helper()
+	spec, err := execution.DecodeTaskSpec(claim.TaskSpec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return provider.Observation{
+		SubmissionToken: claim.SubmissionToken, TaskID: claim.TaskID, AttemptID: claim.AttemptID,
+		TaskSpecDigest: claim.TaskSpecDigest, ProfileID: spec.Profile.ProfileID,
+		ProfileVersion: spec.Profile.ProfileVersion, ProfileDigest: spec.Profile.Artifact.Digest,
+		Job: job, Sequence: sequence, Status: status, ObservedAt: observedAt,
+	}
 }
 
 func testID(t *testing.T, prefix string) string {

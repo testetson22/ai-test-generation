@@ -34,8 +34,10 @@ operations return 503. The executable deliberately wires none of these adapters
 until their production implementations are selected. PostgreSQL integration tests
 run when `ATG_TEST_DATABASE_URL` is set. `internal/testkit` contains only
 deterministic development/test substitutes; the production executable does not
-import or select them. S3-compatible storage and a real provider adapter remain
-open.
+import or select them. S3-compatible storage and a concrete cluster API client
+remain open. `internal/provider/tekton` supplies provisional resource rendering,
+identity checks, and observation normalization against pinned fixtures; no
+production provider or runtime wiring is selected.
 See `docs/architecture/flpath-5048-runtime.md` for the selected boundary.
 
 `internal/materialization` reconstructs the approved generated-test files only

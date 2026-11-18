@@ -53,6 +53,32 @@ chain belongs to the selected workload profile, not the controller process.
 - This does not make local filesystem or fake-provider composition a production
   fallback.
 
+## Provisional Provider Candidate
+
+No FLPATH-5051 responsibility decision is present in this implementation
+checkout. To continue adapter work without treating SSC reuse as approval,
+Tekton's `tekton.dev/v1` TaskRun/PipelineRun API is a provisional candidate only
+for offline resource-rendering, identity checks, and observation fixtures in
+`services/control/internal/provider/tekton`. This does not select a production
+provider, authorize cluster access, or establish that an installed cluster accepts
+these resources. The provider API port has no production Tekton API client or
+service wiring.
+
+The control component remains the sole authority for task/attempt creation,
+retry, deadlines, cancellation intent, reconciliation, and evidence acceptance.
+The candidate provider maps each authorized attempt to one deterministic run
+resource and reports attributed observations; it cannot approve profiles or
+declare tests successful. The workload image executes the approved profile.
+Cluster operators remain responsible for API/RBAC configuration, admission,
+isolation enforcement, and operational support; no team/on-call assignment is
+made here. Non-Tekton providers remain possible without changing the lifecycle.
+
+Promotion beyond offline fixtures requires a concrete FLPATH-5051 decision (or a
+superseding approval), the supported cluster/CRD version, task/pipeline and worker
+image identities, namespace/service-account policy, artifact retention behavior,
+and observed cancellation/termination and teardown guarantees. These requirements
+must be verified before live adapter composition or workload execution.
+
 ## Reconsideration Conditions
 
 Revisit a choice only with concrete evidence that it blocks a required supported

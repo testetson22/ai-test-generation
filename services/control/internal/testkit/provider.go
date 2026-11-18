@@ -61,14 +61,14 @@ func (p *StatefulProvider) Submit(ctx context.Context, request provider.SubmitRe
 	if err := ctx.Err(); err != nil {
 		return provider.JobRef{}, err
 	}
-	if request.SubmissionToken == "" || request.TaskID == "" || request.TaskSpecDigest == "" {
-		return provider.JobRef{}, errors.New("submission token, task ID, and task specification digest are required")
+	if err := request.Validate(); err != nil {
+		return provider.JobRef{}, err
 	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if existing, ok := p.jobs[request.SubmissionToken]; ok {
-		if existing.request.TaskID != request.TaskID || existing.request.TaskSpecDigest != request.TaskSpecDigest {
+		if existing.request != request {
 			return provider.JobRef{}, provider.ErrAttemptConflict
 		}
 		return existing.observation.Job, nil
@@ -80,10 +80,13 @@ func (p *StatefulProvider) Submit(ctx context.Context, request provider.SubmitRe
 		request: request,
 		observation: provider.Observation{
 			SubmissionToken: request.SubmissionToken,
-			Job:             job,
-			Sequence:        1,
-			Status:          provider.StatusPending,
-			ObservedAt:      p.clock.Now(),
+			TaskID:          request.TaskID, AttemptID: request.AttemptID,
+			TaskSpecDigest: request.TaskSpecDigest, ProfileID: request.ProfileID,
+			ProfileVersion: request.ProfileVersion, ProfileDigest: request.ProfileDigest,
+			Job:        job,
+			Sequence:   1,
+			Status:     provider.StatusPending,
+			ObservedAt: p.clock.Now(),
 		},
 	}
 	if p.loseNextSubmitAck {
@@ -93,28 +96,40 @@ func (p *StatefulProvider) Submit(ctx context.Context, request provider.SubmitRe
 	return job, nil
 }
 
-func (p *StatefulProvider) Observe(ctx context.Context, token string) (provider.Observation, error) {
+func (p *StatefulProvider) Observe(ctx context.Context, request provider.SubmitRequest) (provider.Observation, error) {
 	if err := ctx.Err(); err != nil {
+		return provider.Observation{}, err
+	}
+	if err := request.Validate(); err != nil {
 		return provider.Observation{}, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	job, ok := p.jobs[token]
+	job, ok := p.jobs[request.SubmissionToken]
 	if !ok {
-		return provider.Observation{SubmissionToken: token, Status: provider.StatusNotFound, ObservedAt: p.clock.Now()}, nil
+		return observationForRequest(request, provider.Observation{Status: provider.StatusNotFound, Sequence: 1, ObservedAt: p.clock.Now()}), nil
+	}
+	if job.request != request {
+		return provider.Observation{}, provider.ErrAttemptConflict
 	}
 	return job.observation, nil
 }
 
-func (p *StatefulProvider) Cancel(ctx context.Context, token string) (provider.Observation, error) {
+func (p *StatefulProvider) Cancel(ctx context.Context, request provider.SubmitRequest) (provider.Observation, error) {
 	if err := ctx.Err(); err != nil {
+		return provider.Observation{}, err
+	}
+	if err := request.Validate(); err != nil {
 		return provider.Observation{}, err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	job, ok := p.jobs[token]
+	job, ok := p.jobs[request.SubmissionToken]
 	if !ok {
 		return provider.Observation{}, provider.ErrAttemptNotFound
+	}
+	if job.request != request {
+		return provider.Observation{}, provider.ErrAttemptConflict
 	}
 	if job.observation.Status == provider.StatusCancelled || job.observation.Status == provider.StatusCompleted || job.observation.Status == provider.StatusFailed {
 		return job.observation, nil
@@ -126,18 +141,24 @@ func (p *StatefulProvider) Cancel(ctx context.Context, token string) (provider.O
 		status = provider.StatusCancelRequested
 		terminated = false
 	}
-	return p.setObservationLocked(token, status, "", terminated), nil
+	return p.setObservationLocked(request.SubmissionToken, status, "", terminated), nil
 }
 
-func (p *StatefulProvider) Cleanup(ctx context.Context, token string) error {
+func (p *StatefulProvider) Cleanup(ctx context.Context, request provider.SubmitRequest) error {
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := request.Validate(); err != nil {
 		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	job, ok := p.jobs[token]
+	job, ok := p.jobs[request.SubmissionToken]
 	if !ok {
 		return provider.ErrAttemptNotFound
+	}
+	if job.request != request {
+		return provider.ErrAttemptConflict
 	}
 	if p.failNextCleanup {
 		p.failNextCleanup = false
@@ -190,6 +211,17 @@ func (p *StatefulProvider) setObservationLocked(token string, status provider.St
 	job.observation.TerminationConfirmed = terminated
 	job.observation.ObservedAt = p.clock.Now()
 	return job.observation
+}
+
+func observationForRequest(request provider.SubmitRequest, observation provider.Observation) provider.Observation {
+	observation.SubmissionToken = request.SubmissionToken
+	observation.TaskID = request.TaskID
+	observation.AttemptID = request.AttemptID
+	observation.TaskSpecDigest = request.TaskSpecDigest
+	observation.ProfileID = request.ProfileID
+	observation.ProfileVersion = request.ProfileVersion
+	observation.ProfileDigest = request.ProfileDigest
+	return observation
 }
 
 func shortToken(token string) string {

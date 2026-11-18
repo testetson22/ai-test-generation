@@ -221,6 +221,18 @@ func (s *Store) RecordObservation(ctx context.Context, claim execution.Claim, ob
 	if observation.SubmissionToken != claim.SubmissionToken || observation.Sequence == 0 || observation.ObservedAt.IsZero() || pollInterval <= 0 {
 		return fmt.Errorf("provider observation identity, sequence, timestamp, and poll interval are required")
 	}
+	spec, err := execution.DecodeTaskSpec(claim.TaskSpec)
+	if err != nil || spec.TaskSpecID != claim.TaskID || execution.DigestTaskSpec(claim.TaskSpec) != claim.TaskSpecDigest {
+		return execution.ErrStoredTaskCorrupt
+	}
+	request := provider.SubmitRequest{
+		SubmissionToken: claim.SubmissionToken, TaskID: claim.TaskID, AttemptID: claim.AttemptID,
+		TaskSpecDigest: claim.TaskSpecDigest, ProfileID: spec.Profile.ProfileID,
+		ProfileVersion: spec.Profile.ProfileVersion, ProfileDigest: spec.Profile.Artifact.Digest,
+	}
+	if err := observation.ValidateFor(request); err != nil {
+		return err
+	}
 	if observation.Sequence > uint64(^uint64(0)>>1) {
 		return fmt.Errorf("provider observation sequence exceeds PostgreSQL BIGINT range")
 	}

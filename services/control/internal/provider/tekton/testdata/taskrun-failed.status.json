@@ -1,0 +1,17 @@
+{
+  "apiVersion": "tekton.dev/v1",
+  "kind": "TaskRun",
+  "metadata": {
+    "name": "atg-taskrun-cf18a22e39cd5bba19be060f",
+    "namespace": "atg-test",
+    "uid": "taskrun-uid-failed",
+    "resourceVersion": "opaque-rv-31"
+  },
+  "status": {
+    "startTime": "2026-11-18T00:00:01Z",
+    "completionTime": "2026-11-18T00:00:10Z",
+    "conditions": [
+      { "type": "Succeeded", "status": "False", "reason": "TaskRunFailed", "lastTransitionTime": "2026-11-18T00:00:10Z" }
+    ]
+  }
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,10 +50,29 @@ func TestControllerReconcilesAmbiguousSubmissionWithoutRetry(t *testing.T) {
 	}
 }
 
+func TestControllerPassesAttemptAndApprovedProfileIdentityToProvider(t *testing.T) {
+	controller, repository, executionProvider, _ := newControllerHarness(t, ActionSubmit)
+	worked, err := controller.ProcessNext(context.Background(), "controller-1")
+	if !worked || err != nil {
+		t.Fatalf("ProcessNext() = (%t, %v), want (true, nil)", worked, err)
+	}
+	want := provider.SubmitRequest{
+		SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+		TaskSpecDigest: DigestTaskSpec(repository.claim.TaskSpec),
+		ProfileID:      "profile-1", ProfileVersion: "1.0.0",
+		ProfileDigest: validTaskSpec().Profile.Artifact.Digest,
+	}
+	if executionProvider.submitRequest != want {
+		t.Fatalf("provider request = %#v, want %#v", executionProvider.submitRequest, want)
+	}
+}
+
 func TestControllerAuthorizesRetryAfterFailedProviderObservation(t *testing.T) {
 	controller, repository, executionProvider, now := newControllerHarness(t, ActionObserve)
 	executionProvider.observation = provider.Observation{
-		SubmissionToken: "submission-1", Job: provider.JobRef{ID: "job-1"}, Sequence: 1,
+		SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+		TaskSpecDigest: DigestTaskSpec(repository.claim.TaskSpec), ProfileID: "profile-1", ProfileVersion: "1.0.0",
+		ProfileDigest: validTaskSpec().Profile.Artifact.Digest, Job: provider.JobRef{ID: "job-1"}, Sequence: 1,
 		Status: provider.StatusFailed, FailureCategory: "worker_lost", ObservedAt: now,
 	}
 
@@ -84,17 +104,51 @@ func TestControllerSchedulesReconciliationWhenObservationFails(t *testing.T) {
 	}
 }
 
+func TestControllerUsesDurableClaimFenceForProviderObservationSequence(t *testing.T) {
+	controller, repository, executionProvider, now := newControllerHarness(t, ActionObserve)
+	repository.claim.FencingToken = 12
+	executionProvider.observation = provider.Observation{
+		SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+		TaskSpecDigest: DigestTaskSpec(repository.claim.TaskSpec), ProfileID: "profile-1", ProfileVersion: "1.0.0",
+		ProfileDigest: validTaskSpec().Profile.Artifact.Digest, Job: provider.JobRef{ID: "ns/run:uid-1"},
+		Sequence: 2, Status: provider.StatusRunning, ProviderRevision: "opaque-resource-version", ObservedAt: now,
+	}
+	worked, err := controller.ProcessNext(context.Background(), "controller-1")
+	if !worked || err != nil {
+		t.Fatalf("ProcessNext() = (%t, %v), want (true, nil)", worked, err)
+	}
+	if repository.lastObservation.Sequence != 12 || repository.lastObservation.ProviderRevision != "opaque-resource-version" {
+		t.Fatalf("provider observation = %#v, want sequence bound to fencing token", repository.lastObservation)
+	}
+}
+
+func TestControllerRejectsObservationBoundToDifferentTaskSpec(t *testing.T) {
+	controller, repository, executionProvider, now := newControllerHarness(t, ActionObserve)
+	executionProvider.observation = provider.Observation{
+		SubmissionToken: "submission-1", TaskID: "task-1", AttemptID: "attempt-1",
+		TaskSpecDigest: "sha256:" + strings.Repeat("0", 64), ProfileID: "profile-1", ProfileVersion: "1.0.0",
+		ProfileDigest: validTaskSpec().Profile.Artifact.Digest, Job: provider.JobRef{ID: "ns/run:uid-1"},
+		Sequence: 1, Status: provider.StatusCompleted, TerminationConfirmed: true, ObservedAt: now,
+	}
+	worked, err := controller.ProcessNext(context.Background(), "controller-1")
+	if !worked || !errors.Is(err, provider.ErrObservationConflict) || repository.observationCalls != 0 {
+		t.Fatalf("mismatched provider observation = worked %t, err %v, recorded %d; want conflict without acceptance", worked, err, repository.observationCalls)
+	}
+}
+
 func newControllerHarness(t *testing.T, action ClaimAction) (*Controller, *controllerTestRepository, *controllerTestProvider, time.Time) {
 	t.Helper()
 	now := time.Date(2026, time.November, 17, 19, 0, 0, 0, time.UTC)
-	specBytes, err := json.Marshal(validTaskSpec())
+	spec := validTaskSpec()
+	spec.TaskSpecID = "task-1"
+	specBytes, err := json.Marshal(spec)
 	if err != nil {
 		t.Fatalf("marshal task spec: %v", err)
 	}
 	repository := &controllerTestRepository{claim: &Claim{
 		TaskID: "task-1", PairID: "pair-1", RunID: "run-1", AttemptID: "attempt-1",
 		TaskSpec: specBytes, TaskSpecDigest: DigestTaskSpec(specBytes), SubmissionToken: "submission-1",
-		Action: action,
+		Action: action, FencingToken: 1,
 	}}
 	executionProvider := &controllerTestProvider{}
 	providerID := provider.Identity{Kind: "test-provider", ID: "provider-1", Version: "1"}
@@ -121,6 +175,7 @@ type controllerTestRepository struct {
 	uncertainAt            time.Time
 	uncertainInterval      time.Duration
 	observationCalls       int
+	lastObservation        provider.Observation
 	reconciliationCalls    int
 	reconciliationAt       time.Time
 	reconciliationInterval time.Duration
@@ -176,8 +231,9 @@ func (r *controllerTestRepository) BlockClaim(_ context.Context, _ Claim, catego
 	return nil
 }
 
-func (r *controllerTestRepository) RecordObservation(context.Context, Claim, provider.Observation, time.Time, time.Duration) error {
+func (r *controllerTestRepository) RecordObservation(_ context.Context, _ Claim, observation provider.Observation, _ time.Time, _ time.Duration) error {
 	r.observationCalls++
+	r.lastObservation = observation
 	return nil
 }
 
@@ -192,28 +248,30 @@ func (r *controllerTestRepository) RequestCancel(context.Context, string, int64,
 }
 
 type controllerTestProvider struct {
-	submitCalls  int
-	observeCalls int
-	submitErr    error
-	observeErr   error
-	observation  provider.Observation
+	submitCalls   int
+	submitRequest provider.SubmitRequest
+	observeCalls  int
+	submitErr     error
+	observeErr    error
+	observation   provider.Observation
 }
 
-func (p *controllerTestProvider) Submit(context.Context, provider.SubmitRequest) (provider.JobRef, error) {
+func (p *controllerTestProvider) Submit(_ context.Context, request provider.SubmitRequest) (provider.JobRef, error) {
 	p.submitCalls++
+	p.submitRequest = request
 	if p.submitErr != nil {
 		return provider.JobRef{}, p.submitErr
 	}
 	return provider.JobRef{ID: "job-1"}, nil
 }
 
-func (p *controllerTestProvider) Observe(context.Context, string) (provider.Observation, error) {
+func (p *controllerTestProvider) Observe(context.Context, provider.SubmitRequest) (provider.Observation, error) {
 	p.observeCalls++
 	return p.observation, p.observeErr
 }
 
-func (p *controllerTestProvider) Cancel(context.Context, string) (provider.Observation, error) {
+func (p *controllerTestProvider) Cancel(context.Context, provider.SubmitRequest) (provider.Observation, error) {
 	return provider.Observation{}, errors.New("unexpected Cancel call")
 }
 
-func (p *controllerTestProvider) Cleanup(context.Context, string) error { return nil }
+func (p *controllerTestProvider) Cleanup(context.Context, provider.SubmitRequest) error { return nil }

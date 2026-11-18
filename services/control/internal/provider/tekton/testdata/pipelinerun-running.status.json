@@ -1,0 +1,16 @@
+{
+  "apiVersion": "tekton.dev/v1",
+  "kind": "PipelineRun",
+  "metadata": {
+    "name": "atg-pipelinerun-cf18a22e39cd5bba19be060f",
+    "namespace": "atg-test",
+    "uid": "pipelinerun-uid-running",
+    "resourceVersion": "opaque-rv-20"
+  },
+  "status": {
+    "startTime": "2026-11-18T00:00:01Z",
+    "conditions": [
+      { "type": "Succeeded", "status": "Unknown", "reason": "Running", "lastTransitionTime": "2026-11-18T00:00:03Z" }
+    ]
+  }
+}

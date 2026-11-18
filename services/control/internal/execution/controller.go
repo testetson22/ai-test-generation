@@ -75,13 +75,21 @@ func (c *Controller) ProcessNext(ctx context.Context, holder string) (bool, erro
 	case ActionSubmit:
 		return true, c.submit(ctx, *claim, now)
 	case ActionObserve:
-		observation, err := c.provider.Observe(ctx, claim.SubmissionToken)
+		request, err := c.providerRequest(*claim)
+		if err != nil {
+			return true, c.repository.BlockClaim(ctx, *claim, "invalid_input", "stored task specification is invalid", now)
+		}
+		observation, err := c.provider.Observe(ctx, request)
 		if err != nil {
 			return true, c.repository.ScheduleReconciliation(ctx, *claim, now, c.config.PollInterval)
 		}
 		return true, c.recordObservation(ctx, *claim, observation, now)
 	case ActionCancel:
-		observation, err := c.provider.Cancel(ctx, claim.SubmissionToken)
+		request, err := c.providerRequest(*claim)
+		if err != nil {
+			return true, c.repository.BlockClaim(ctx, *claim, "invalid_input", "stored task specification is invalid", now)
+		}
+		observation, err := c.provider.Cancel(ctx, request)
 		if err != nil {
 			return true, c.repository.ScheduleReconciliation(ctx, *claim, now, c.config.PollInterval)
 		}
@@ -92,6 +100,10 @@ func (c *Controller) ProcessNext(ctx context.Context, holder string) (bool, erro
 }
 
 func (c *Controller) submit(ctx context.Context, claim Claim, now time.Time) error {
+	request, err := c.providerRequest(claim)
+	if err != nil {
+		return c.repository.BlockClaim(ctx, claim, "invalid_input", "stored task specification is invalid", now)
+	}
 	spec, err := DecodeTaskSpec(claim.TaskSpec)
 	if err != nil {
 		return c.repository.BlockClaim(ctx, claim, "invalid_input", "stored task specification is invalid", now)
@@ -103,11 +115,7 @@ func (c *Controller) submit(ctx context.Context, claim Claim, now time.Time) err
 		}
 		return c.repository.BlockClaim(ctx, claim, "capability_unavailable", "dispatch prerequisites are not satisfied", now)
 	}
-	job, err := c.provider.Submit(ctx, provider.SubmitRequest{
-		SubmissionToken: claim.SubmissionToken,
-		TaskID:          claim.TaskID,
-		TaskSpecDigest:  claim.TaskSpecDigest,
-	})
+	job, err := c.provider.Submit(ctx, request)
 	if err != nil {
 		if errors.Is(err, provider.ErrAttemptConflict) {
 			return c.repository.RecordSubmitFailure(ctx, claim, "invalid_input", now)
@@ -128,6 +136,17 @@ func (c *Controller) submit(ctx context.Context, claim Claim, now time.Time) err
 }
 
 func (c *Controller) recordObservation(ctx context.Context, claim Claim, observation provider.Observation, receivedAt time.Time) error {
+	request, err := c.providerRequest(claim)
+	if err != nil {
+		return c.repository.BlockClaim(ctx, claim, "invalid_input", "stored task specification is invalid", receivedAt)
+	}
+	if err := observation.ValidateFor(request); err != nil {
+		return err
+	}
+	if claim.FencingToken < 1 {
+		return fmt.Errorf("provider observation claim has no positive fencing token")
+	}
+	observation.Sequence = uint64(claim.FencingToken)
 	if err := c.repository.RecordObservation(ctx, claim, observation, receivedAt, c.config.PollInterval); err != nil {
 		return err
 	}
@@ -135,6 +154,25 @@ func (c *Controller) recordObservation(ctx context.Context, claim Claim, observa
 		return c.authorizeRetryIfEligible(ctx, claim.TaskID, receivedAt)
 	}
 	return nil
+}
+
+func (c *Controller) providerRequest(claim Claim) (provider.SubmitRequest, error) {
+	spec, err := DecodeTaskSpec(claim.TaskSpec)
+	if err != nil {
+		return provider.SubmitRequest{}, err
+	}
+	if spec.TaskSpecID != claim.TaskID || DigestTaskSpec(claim.TaskSpec) != claim.TaskSpecDigest {
+		return provider.SubmitRequest{}, ErrStoredTaskCorrupt
+	}
+	request := provider.SubmitRequest{
+		SubmissionToken: claim.SubmissionToken, TaskID: claim.TaskID, AttemptID: claim.AttemptID,
+		TaskSpecDigest: claim.TaskSpecDigest, ProfileID: spec.Profile.ProfileID,
+		ProfileVersion: spec.Profile.ProfileVersion, ProfileDigest: spec.Profile.Artifact.Digest,
+	}
+	if err := request.Validate(); err != nil {
+		return provider.SubmitRequest{}, err
+	}
+	return request, nil
 }
 
 func (c *Controller) authorizeRetryIfEligible(ctx context.Context, taskID string, now time.Time) error {
