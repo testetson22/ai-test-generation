@@ -38,7 +38,10 @@ import or select them. S3-compatible storage and a concrete cluster API client
 remain open. `internal/provider/tekton` supplies provisional resource rendering,
 identity checks, and observation normalization against pinned fixtures; no
 production provider or runtime wiring is selected.
-See `docs/architecture/flpath-5048-runtime.md` for the selected boundary.
+See [`flpath-5048-runtime.md`](../../docs/architecture/flpath-5048-runtime.md)
+for the selected control boundary and
+[`repository-layout.md`](../../docs/architecture/repository-layout.md#provisional-phase-runtime-boundaries)
+for phase-language and harness guidance.
 
 `internal/materialization` reconstructs the approved generated-test files only
 after checking the patch, materialized-file, base-file, subject, and path

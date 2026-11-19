@@ -40,6 +40,10 @@ Python reference a hidden runtime dependency. PostgreSQL supplies transactional
 claims and coordination across replicas. Immutable object storage separates
 artifact retention from database state and worker lifetime. The framework/tool
 chain belongs to the selected workload profile, not the controller process.
+This selects Go for the execution control component, not a Go-only rule for every
+phase or an AI framework. See
+[Provisional Phase Runtime Boundaries](repository-layout.md#provisional-phase-runtime-boundaries)
+for the current recommendation on Analyze/Plan/Code and external harness adapters.
 
 ## Explicit Non-Goals
 

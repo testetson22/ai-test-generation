@@ -18,6 +18,45 @@ func TestDecodeBoundProfileUsesOnlyDigestBoundSyntheticProfile(t *testing.T) {
 	}
 }
 
+func TestDecodeBoundProfileRejectsReferencePhaseCandidate(t *testing.T) {
+	partialCandidate := map[string]any{
+		"contract": "atg.execution_profile",
+		"version":  "1.0",
+		"application": map[string]any{
+			"kind": "application", "id": "example.sim:profile-candidate-fixture", "version": "1.0.0",
+		},
+		"source_policy": map[string]any{
+			"repository":      "https://example.invalid/profile-candidate-fixture.git",
+			"revision_policy": "immutable", "allowed_source_roots": []string{"src/main/java"},
+		},
+		"target": map[string]any{
+			"language": "java", "framework": "Spring Boot", "framework_version": "2.7.18",
+			"runtime":    map[string]any{"kind": "runtime", "id": "OpenJDK", "version": "17"},
+			"build_tool": map[string]any{"kind": "build-tool", "id": "maven", "version": "3.9.9"},
+		},
+		"commands": []any{},
+		"test_selection": map[string]any{
+			"command_id": nil, "selector": nil, "report_media_type": nil, "minimum_test_count": nil,
+		},
+	}
+	data, err := json.Marshal(partialCandidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := bindProfileDigest(t, "sample-profile-candidate", "0.1.0", data)
+	if _, err := DecodeBoundProfile(spec, data); !errors.Is(err, ErrInvalidExecutionProfile) {
+		t.Fatalf("reference-phase candidate was accepted: %v", err)
+	}
+
+	profileWithProvisionalIdentity := syntheticProfile()
+	profileWithProvisionalIdentity.WorkerImage = Identity{}
+	profileWithProvisionalIdentity.Commands = nil
+	spec, data = bindSyntheticProfile(t, profileWithProvisionalIdentity)
+	if _, err := DecodeBoundProfile(spec, data); !errors.Is(err, ErrInvalidExecutionProfile) {
+		t.Fatalf("incomplete candidate passed the Go profile validator: %v", err)
+	}
+}
+
 func TestDecodeBoundProfileRejectsDigestIdentityAndUnknownFieldDrift(t *testing.T) {
 	t.Run("artifact byte drift", func(t *testing.T) {
 		spec, data := bindSyntheticProfile(t, syntheticProfile())

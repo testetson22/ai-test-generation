@@ -66,6 +66,51 @@ The current root `pyproject.toml` and
 `.github/workflows/atg-contracts-and-components.yml` build/validate the Python
 reference and contract assets only. No Go/Java production build is implied.
 
+## Provisional Phase Runtime Boundaries
+
+For a production path expected to use Go, default to Go for first-party phase
+orchestration and lifecycle rules. This is a provisional implementation
+direction, not a commitment to one service or binary per phase. Keep the Python
+implementation under `src/atg/` as a reference/conformance implementation; do
+not make production Go code import it or invoke it as a hidden subprocess.
+
+| Phase | Production responsibility | Language guidance |
+|---|---|---|
+| Analyze | Bind findings to the admitted repository revision, preserve evidence and uncertainty, and produce repository/test facts and objective candidates | Go owns request, provenance, capability, and result semantics. Use Go analyzers by default; isolate a Python or tool-specific analyzer behind a versioned adapter only when a concrete library/tool advantage justifies it. |
+| Plan | Turn approved analysis into a complete objective disposition, test intent, and checkpoint | Keep deterministic coverage, policy, persistence, and reviewer gates in Go. Any model-generated proposal is advisory input, not approval or executable authority. |
+| Code | Bound generation attempts and retain model/tool/worker identity, usage, patch, validation, and failure evidence | Go owns lifecycle and output validation. A model/agent harness may be a separately deployed provider in any language. |
+| Execute | Bind an approved profile to immutable source and artifacts, authorize attempts, reconcile providers, and accept evidence | Keep controller state and retry/cancellation authority in Go. Workload images use the runtime/toolchain required by the profile and remain isolated from model/controller credentials. |
+
+An AI harness such as Pydantic AI can be used by Go only across a process
+boundary; Go cannot use its Python package as a native library. If selected, run
+it as an independently built service/worker implementing an explicit
+task-runner adapter. The boundary should carry a bounded task/attempt identity,
+input artifact references and digests, allowed tool capabilities, and budgets;
+responses should identify model/tool/worker versions, usage, status/failure,
+and output artifact references/digests. For work that can outlive an API request
+or controller process, expose idempotent submit, observe/reconcile, and cancel
+operations; bind submission identity to the task, attempt, and input digest.
+Unknown submission outcomes must be observable/reconcilable rather than silently
+re-launched. A synchronous call is suitable only for bounded operations whose
+timeout/recovery semantics are explicit. Choose HTTP, gRPC, or a durable queue
+only after the harness spike establishes its asynchronous, cancellation, and
+recovery needs.
+
+The harness must not own ATG lifecycle retries, reviewer approval, execution
+profile approval, or canonical run state. Do not expose its graph/checkpoint or
+SDK objects as shared contracts. Keep model credentials in the harness boundary;
+never pass them to a worker executing untrusted repository code. A selected
+Python harness must have its own pinned dependencies, build/package, tests,
+deployment, authentication, observability, and failure/reconciliation contract.
+It is an optional provider, not a reason to keep Analyze, Plan, Code, or
+controller semantics in Python.
+
+The remaining language question is per concrete adapter, not whether the whole
+product must be ported at once. Compare the actual library/tool support,
+isolation model, operational burden, dependency lifecycle, and conformance results
+for each exception. Pydantic AI remains a candidate until its spike meets those
+criteria; this guidance does not select it or a transport.
+
 ## Future Repository Separation Points
 
 Keep one repository now, but preserve the following extraction seams. They are
