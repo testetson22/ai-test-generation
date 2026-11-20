@@ -278,6 +278,22 @@ treated as test, build, source, or provider evidence. This exercises
 orchestration and retry semantics only; it does not validate a real application
 profile or worker.
 
+The same simulator can be exposed through the Go control HTTP server in an
+explicit loopback-only mode:
+
+```bash
+cd services/control
+ATG_MODE=offline-simulation go run ./cmd/atg-control
+```
+
+Submit one of `success`, `retry`, `no-changes`, or `unknown-outcome` to
+`POST http://127.0.0.1:8080/development/simulations/test-generation` with a JSON
+body such as `{"scenario":"retry"}`. The endpoint returns the same synthetic
+report as the CLI. This mode binds only to an IPv4 or IPv6 loopback IP address;
+it does not configure run persistence, authentication, execution-provider
+dispatch, or production readiness. `/health/ready` and execution routes remain
+unavailable. The default control-service mode does not expose the simulator.
+
 ## Analyze-Plan-Code Profile Candidate Simulation
 
 Run the Python reference phases against a temporary Java/Maven fixture and emit

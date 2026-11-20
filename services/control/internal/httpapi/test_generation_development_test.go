@@ -132,6 +132,21 @@ func TestDevelopmentAPIRejectsWeakConfiguration(t *testing.T) {
 	}
 }
 
+func TestOfflineSimulationEndpointRejectsUnknownFieldsAndScenarios(t *testing.T) {
+	server := NewTestGenerationSimulationHandler()
+	for _, body := range []string{
+		`{}`,
+		`{"scenario":"live"}`,
+		`{"scenario":"success","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`,
+		`{"scenario":"success","scenario":"retry"}`,
+	} {
+		response := testGenerationRequest(server, http.MethodPost, "/development/simulations/test-generation", body, "", "")
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("body %s status = %d, want 400", body, response.Code)
+		}
+	}
+}
+
 func newTestGenerationDevelopmentAPI() (*TestGenerationDevelopmentAPI, *memoryTestGenerationRepository) {
 	now := time.Date(2026, 11, 18, 20, 0, 0, 0, time.UTC)
 	repository := &memoryTestGenerationRepository{runs: make(map[string]testgenflow.Run), keys: make(map[string]string), events: make(map[string]map[string]string)}

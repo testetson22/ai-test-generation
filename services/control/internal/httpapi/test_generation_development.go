@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgenflow"
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgensim"
 )
 
 const maxTestGenerationDevelopmentRequestBytes = 16 * 1024
@@ -52,6 +53,42 @@ func NewTestGenerationDevelopmentHandler(api *TestGenerationDevelopmentAPI) http
 	}
 	api.Register(mux)
 	return mux
+}
+
+func NewTestGenerationSimulationHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /development/simulations/test-generation", simulateTestGeneration)
+	return mux
+}
+
+func simulateTestGeneration(w http.ResponseWriter, r *http.Request) {
+	body, err := decodeJSONBody(w, r, 1024)
+	if err != nil {
+		writeBodyError(w, err)
+		return
+	}
+	var input struct {
+		Scenario testgensim.Scenario `json:"scenario"`
+	}
+	if err := decodeOneJSON(body, &input); err != nil || !validTestGenerationScenario(input.Scenario) {
+		writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "invalid_simulation_request")
+		return
+	}
+	report, err := testgensim.Run(r.Context(), input.Scenario)
+	if err != nil {
+		writeTestGenerationDevelopmentError(w, http.StatusInternalServerError, "simulation_failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func validTestGenerationScenario(scenario testgensim.Scenario) bool {
+	switch scenario {
+	case testgensim.ScenarioSuccess, testgensim.ScenarioRetry, testgensim.ScenarioNoChanges, testgensim.ScenarioUnknownResult:
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *TestGenerationDevelopmentAPI) Register(mux *http.ServeMux) {

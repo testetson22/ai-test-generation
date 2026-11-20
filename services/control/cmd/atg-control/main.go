@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,14 +17,15 @@ import (
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	addr := os.Getenv("ATG_LISTEN_ADDR")
-	if addr == "" {
-		addr = ":8080"
+	handler, addr, err := serverConfiguration(os.Getenv("ATG_MODE"), os.Getenv("ATG_LISTEN_ADDR"))
+	if err != nil {
+		logger.Error("invalid control service configuration", "error", err)
+		os.Exit(2)
 	}
 
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           httpapi.NewHandler(httpapi.Dependencies{}),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -49,4 +52,38 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+func serverConfiguration(mode, configuredAddress string) (http.Handler, string, error) {
+	if mode == "" {
+		address := configuredAddress
+		if address == "" {
+			address = ":8080"
+		}
+		return httpapi.NewHandler(httpapi.Dependencies{}), address, nil
+	}
+	if mode != "offline-simulation" {
+		return nil, "", errors.New("ATG_MODE must be empty or offline-simulation; production composition is not available")
+	}
+	address := configuredAddress
+	if address == "" {
+		address = "127.0.0.1:8080"
+	}
+	if !loopbackAddress(address) {
+		return nil, "", errors.New("offline-simulation mode requires ATG_LISTEN_ADDR to use a loopback IP address")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/", httpapi.NewHandler(httpapi.Dependencies{}))
+	mux.Handle("POST /development/simulations/test-generation", httpapi.NewTestGenerationSimulationHandler())
+	return mux, address, nil
+}
+
+func loopbackAddress(address string) bool {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	portNumber, err := strconv.Atoi(port)
+	return ip != nil && ip.IsLoopback() && err == nil && portNumber > 0 && portNumber <= 65535
 }
