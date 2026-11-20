@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: atg-spring-profile-validation-
+  labels:
+    app.kubernetes.io/name: atg-profile-validation
+  annotations:
+    atg.project-lightpath.io/purpose: development-baseline-not-profile-approval
+spec:
+  activeDeadlineSeconds: 900
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  volumes:
+    - name: workspace
+      emptyDir:
+        sizeLimit: 4Gi
+  initContainers:
+    - name: source
+      image: quay.io/konflux-ci/git-clone@sha256:4e53ebd9242f05ca55bfc8d58b3363d8b9d9bc3ab439d9ab76cdbdf5b1fd42d9
+      command: [/bin/sh, -ceu]
+      args:
+        - |
+          mkdir -p /workspace/home /workspace/evidence
+          git init /workspace/source
+          git -C /workspace/source fetch --depth=1 https://github.com/lzspangler/spring-boot-example-application.git 01a18a1b40e151ffcc1d7bef86bf335f87999750
+          git -C /workspace/source checkout --detach FETCH_HEAD
+          revision="$(git -C /workspace/source rev-parse HEAD)"
+          test "$revision" = 01a18a1b40e151ffcc1d7bef86bf335f87999750
+          test -z "$(git -C /workspace/source status --porcelain)"
+          printf '%s\n' "$revision" > /workspace/evidence/source-revision.txt
+          sha256sum /workspace/source/pom.xml > /workspace/evidence/pom.sha256
+      env:
+        - name: HOME
+          value: /workspace/home
+        - name: GIT_TERMINAL_PROMPT
+          value: "0"
+      resources:
+        requests:
+          cpu: 25m
+          memory: 128Mi
+          ephemeral-storage: 1Gi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+          ephemeral-storage: 4Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+  containers:
+    - name: maven
+      image: registry.redhat.io/ubi9/openjdk-17@sha256:5d619e202695acf76a5f32c07ace6709f5ee5d3999bf977e1bf95ad34197f44a
+      workingDir: /workspace/source
+      command: [/bin/bash, -ceu]
+      args:
+        - |
+          set -o pipefail
+          umask 077
+          ulimit -f 524288
+          mkdir -p /workspace/tmp /workspace/m2
+          mkfifo /workspace/release
+          java -version > /workspace/evidence/java-version.txt 2>&1
+          mvn -version > /workspace/evidence/maven-version.txt 2>&1
+          run_phase() {
+            local name="$1" deadline="$2" result=0
+            shift 2
+            mkdir -p "/workspace/evidence/$name"
+            date -u +%FT%TZ > "/workspace/evidence/$name/started.txt"
+            printf '%s\n' "$@" > "/workspace/evidence/$name/argv.txt"
+            timeout --signal=TERM --kill-after=15s "$deadline" "$@" > "/workspace/evidence/$name/command.log" 2>&1 || result=$?
+            date -u +%FT%TZ > "/workspace/evidence/$name/finished.txt"
+            printf '%s\n' "$result" > "/workspace/evidence/$name/exit-code.txt"
+            if [ -d target/surefire-reports ]; then
+              mv target/surefire-reports "/workspace/evidence/$name/surefire-reports"
+            fi
+            return "$result"
+          }
+          result=0
+          if run_phase package 480s mvn -B -ntp -Dmaven.repo.local=/workspace/m2 clean package; then
+            run_phase focused 90s mvn -B -ntp -Dmaven.repo.local=/workspace/m2 -Dtest=com.redhat.lightwell.service.StatementImportServiceTest test || result=$?
+            run_phase verify 120s mvn -B -ntp -Dmaven.repo.local=/workspace/m2 verify || result=$?
+            run_phase dependencies 60s mvn -B -ntp -Dmaven.repo.local=/workspace/m2 org.apache.maven.plugins:maven-dependency-plugin:3.6.1:list -DoutputFile=/workspace/evidence/resolved-dependencies.txt || result=$?
+          else
+            result=$?
+            printf '%s\n' focused verify dependencies > /workspace/evidence/not-reached.txt
+          fi
+          find /workspace/m2 -type f -name '*.jar' -exec sha256sum {} + > /workspace/evidence/resolved-jars.sha256
+          if [ -f target/site/jacoco/jacoco.xml ]; then
+            cp target/site/jacoco/jacoco.xml /workspace/evidence/jacoco.xml
+          fi
+          printf '%s\n' "$result" > /workspace/evidence/exit-code.txt
+          touch /workspace/evidence-ready
+          printf 'Evidence available; aggregate exit code: %s\n' "$result"
+          # Retain evidence until collection; Pod readiness is not a test verdict.
+          read -r release < /workspace/release
+          test "$release" = collected
+          exit "$result"
+      env:
+        - name: HOME
+          value: /workspace/home
+        - name: MAVEN_OPTS
+          value: -Xmx1024m -Djava.io.tmpdir=/workspace/tmp
+      readinessProbe:
+        exec:
+          command: [/usr/bin/test, -f, /workspace/evidence-ready]
+        periodSeconds: 5
+        timeoutSeconds: 1
+      resources:
+        requests:
+          cpu: 25m
+          memory: 2Gi
+          ephemeral-storage: 1Gi
+        limits:
+          cpu: "2"
+          memory: 4Gi
+          ephemeral-storage: 4Gi
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace

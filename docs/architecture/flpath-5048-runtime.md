@@ -117,13 +117,19 @@ current public upstream `main` was `83b6f931c08071133678284548ff19b13f6f8db0`,
 eight commits beyond the imported source; it is a comparison point, not the
 profile subject.
 
+On 2026-11-20, fresh authenticated-cluster and ingress-CA-verified Git reads
+confirmed both the re-seeded GitLab project's `main` and public upstream `main`
+at `83b6f931c08071133678284548ff19b13f6f8db0`. The initial profile subject remains
+the explicit `01a18a1...` pin, not this moving branch. The bounded validation
+below checked out that pin directly from the public upstream.
+
 The imported POM identifies Java 17, Maven, and Spring Boot 2.7.18. The source
 tree has eight `*IntegrationTest.java` classes, along with unit/regression test
 classes. This imported POM does **not** declare Failsafe or `*FT` tests. The
 newer upstream `83b6f931...` POM adds a Failsafe `*FT` suite; do not apply that
-newer test plan to the pinned source. The imported README claims 121 total
-tests, but that count has not been independently confirmed from retained test
-reports.
+newer test plan to the pinned source. The imported README's 121-test claim was
+independently confirmed by the retained 2026-11-20 package and verify reports
+below; it was not verified by the earlier historical TaskRun status alone.
 
 The successful Nov. 2 package TaskRun used the `maven` Task with subdirectory
 `source` and its default `package` goal. This is the strongest available
@@ -145,8 +151,8 @@ required merely to discover these class names: they end in `Test.java`, match
 Surefire's default `**/*Test.java` include, and the pinned application POM
 declares no Surefire include/exclude override or Failsafe binding. Maven
 `package` runs through Surefire's `test` phase, so it is expected to select the
-`*IntegrationTest` classes as well as the regression `*Test` classes; retained
-reports are still needed to confirm the actual class count and outcomes. A
+`*IntegrationTest` classes as well as the regression `*Test` classes. The
+2026-11-20 reports confirm 23 classes, including all eight integration classes. A
 separately invoked Failsafe command would run the selected integration classes
 under Failsafe reports, so avoid running both routes in one profile unless
 duplicate execution is intentional. Record exactly which tests each command
@@ -175,8 +181,8 @@ commands as one combined suite without accounting for duplicate execution of
 `*IntegrationTest` classes. Validate the chosen route against the captured
 source and worker. Retain Surefire/Failsafe JUnit XML, command exit/timing,
 resolved dependency inventory, and immutable source/profile/worker identities.
-The README's 121-test count is not a profile oracle; discover and execute the
-selected suites under the approved worker.
+The measured 121-test inventory is evidence for this source/worker run, not a
+general profile oracle; validate the selected suites under any adopted worker.
 
 Maven settings are not part of the public application source and the README
 documents Lightwell repository credentials. The existing cluster Artifactory is
@@ -371,6 +377,100 @@ selectors, report handling, resource/deadline limits, egress policy, workspace
 isolation, and reviewer/authorization identity. A same-subject control can
 validate the mechanism; no behavioral differential is claimed until a
 characterized candidate and expected comparison are attributable.
+
+### Bounded Baseline Validation (2026-11-20)
+
+After development-cluster access was restored, the standalone
+[`spring-profile-validation.yaml`](../../deploy/development-harness/spring-profile-validation.yaml)
+probe exercised the pinned application without deploying ATG, calling a model,
+changing application source, or creating a PR. This is real baseline execution
+evidence, not an approved execution profile or a live Go/Tekton-provider test.
+
+The current demo GitOps task/pipeline applications were `Synced/Healthy` at
+`1f9d2842b9f4763e1da7a9b490e5b837889a4437`. Its unit pipeline is now
+`agentic-test-generation-unit`, whose final Maven rerun is `test`, not `verify`.
+The legacy action helper's `agentic-test-generation` name and
+`scm-clone-basic-auth` reference cannot be assumed valid: that Secret was absent.
+The separate `ssc-orchestrator` application's degraded resource was its
+deadline-exceeded setup Job; the standalone probe did not depend on that Job or
+change it. These observations supersede current-state assumptions in the
+historical snapshots above, without rewriting their results.
+
+Successful probe identity:
+
+- Pod: `atg-spring-profile-validation-98664`, namespace `tssc-app-ci`, UID
+  `3eb77810-8d39-4302-be8d-f74f9a676bb3`, node `ocp-edge94-worker-2`.
+- Source: clean detached checkout of
+  `01a18a1b40e151ffcc1d7bef86bf335f87999750`; POM SHA-256
+  `dd3f3da1018249ddae26adaca6b28eb3d7e20e56bcd26aac30989beaef349c1a`.
+- Clone image:
+  `quay.io/konflux-ci/git-clone@sha256:4e53ebd9242f05ca55bfc8d58b3363d8b9d9bc3ab439d9ab76cdbdf5b1fd42d9`.
+- Observed Maven image:
+  `registry.redhat.io/ubi9/openjdk-17@sha256:5d619e202695acf76a5f32c07ace6709f5ee5d3999bf977e1bf95ad34197f44a`;
+  Maven 3.8.5 (Red Hat 3.8.5-6), OpenJDK 17.0.15+6-LTS, Linux/amd64.
+- Both containers used UID/GID 65532 and a shared fsGroup, with privilege
+  escalation disabled, all capabilities dropped, and RuntimeDefault seccomp.
+  No API token or Secret was mounted. Dependency resolution used public Maven
+  Central with a fresh per-pod cache, not the credential-bearing Artifactory
+  settings. This does not validate the intended Artifactory/credential route.
+- Admission used the namespace's `default` service account and existing
+  `artifactory-scc`. The manifest's fixed UID/fsGroup depends on that development
+  admission policy; it is not evidence of acceptance under restricted SCCs or an
+  approved ATG service-account policy. No SCC or permission grant was changed.
+
+All commands used working directory `/workspace/source` and the common prefix
+`mvn -B -ntp -Dmaven.repo.local=/workspace/m2`:
+
+| Phase | Additional arguments | UTC interval | Exit | Observed reports |
+| --- | --- | --- | --- | --- |
+| Baseline | `clean package` | 18:51:41-18:53:20 (99s) | 0 | 121 passed, 23 XML files/classes |
+| Focused | `-Dtest=com.redhat.lightwell.service.StatementImportServiceTest test` | 18:53:20-18:53:27 (7s) | 0 | 7 passed, 1 XML file/class |
+| Final | `verify` | 18:53:27-18:54:07 (40s) | 0 | 121 passed, 23 XML files/classes |
+| Dependency inventory | `org.apache.maven.plugins:maven-dependency-plugin:3.6.1:list -DoutputFile=/workspace/evidence/resolved-dependencies.txt` | 18:54:07-18:54:21 (14s) | 0 | Resolved project dependency list |
+
+The package and verify inventories have identical 121 unique `classname#name`
+IDs, with zero failures, errors, or skips. All eight integration classes ran
+under Surefire, so this is not a unit-only suite. Reports from each phase were
+moved to separate evidence directories before the next invocation; the focused
+report count does not include stale package reports. A final JaCoCo XML report
+and checksums for 333 downloaded JARs (dependencies and build plugins, not 333
+application dependencies) were also retained. No coverage increase or
+behavioral differential is claimed.
+
+The probe has a 900-second Pod deadline, phase timeouts of 480/90/120/60 seconds,
+a 4-GiB ephemeral workspace/storage limit, and a 512-MiB per-file limit. The
+Maven container requests 2Gi memory and limits memory to 4Gi and CPU to 2 cores;
+the clone container requests 128Mi and limits memory to 256Mi and CPU to 500m.
+Both request 25m CPU. This very small CPU reservation is a development scheduling
+workaround, not approved sizing: all three workers had about 99% of allocatable
+CPU reserved despite approximately 14% measured utilization. An initial 500m
+CPU/2Gi Maven request did not schedule; no existing workload was displaced or
+resized. Memory/resource maxima and these timings are not capacity guarantees.
+Egress and PID policy still need explicit selection for an adopted profile.
+
+Earlier probes are not successes: one container failed before Maven because
+the two images used different default UIDs; another executed all 121 tests but
+failed Spring Boot repackaging because the probe's original 32-MiB per-file
+limit also bounded the application JAR. Its package failure and `not_reached`
+focused/verify phases were retained separately. The successful rerun corrected
+the shared UID and raised the per-file limit without changing application code.
+
+Raw reports, commands, logs, versions, checksums, a derived test-ID summary, and
+the Pod metadata are retained locally under the ignored `.kilo/` directory with
+prefix `flpath-5048-spring-20261120-98664`. The raw `.tar` archive SHA-256 is
+`091bcf83e892871d7ccbc5a9ee0392afd101982052f2991b6ca2842b5a55704b`.
+Every retained member digest was checked before acknowledging collection. The
+worker then reached `Succeeded`; all probe Pods were deleted and their ephemeral
+workspaces released. This is local development retention, not a published,
+signed, production-durable evidence artifact.
+
+The previously missing real test counts, report inventory, pinned-worker
+toolchain, and bounded same-tree Maven command observations are now available.
+Still outstanding are the approved profile identity/digest and policies,
+Artifactory settings path, representative worker sizing, durable artifact
+publication, actual Maven runner/provider wiring, generation-worker handoff,
+and any source change/differential or full demo integration. This probe does
+not resolve FLPATH-5051 or select a FLPATH-5050 harness.
 
 ## Reconsideration Conditions
 

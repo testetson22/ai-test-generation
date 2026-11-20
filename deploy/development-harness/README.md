@@ -49,9 +49,12 @@ The demo imports the application into GitLab and commonly selects moving `main`.
 Resolve and pin the actual application commit and dependency states; the
 playground infrastructure SHA is not the application SHA. VPE's checked-in
 analysis profile names upstream commit
-`01a18a1b40e151ffcc1d7bef86bf335f87999750`, but its equality with the selected
-imported application still needs verification. Preparation metadata is not an
-approved ATG execution profile.
+`01a18a1b40e151ffcc1d7bef86bf335f87999750`; equality with the imported application
+was confirmed on 2026-11-18. By 2026-11-20 the re-seeded GitLab main had advanced
+to `83b6f931...`, so the initial profile remains pinned independently of that
+branch. The [runtime evidence](../../docs/architecture/flpath-5048-runtime.md#bounded-baseline-validation-2026-11-20)
+now includes actual execution of the initial pin. Preparation metadata and this
+baseline probe are not an approved ATG execution profile.
 
 Implement and authorize a versioned execution profile with pinned tool/image and
 dependency identities, commands, focused test selection, application setup/reset,
@@ -155,6 +158,10 @@ selector for changed test classes; the later pipeline check is a separate Maven
 `verify`. Preserve that distinction rather than replacing both with an
 unqualified command.
 
+The 2026-11-20 cluster's `agentic-test-generation-unit` pipeline instead uses
+`test` for its later rerun. The flow above describes the intended compatibility
+target, not a claim that the current deployed pipeline already matches it.
+
 The original Pipeline results are `CHAINS-GIT_URL`, `CHAINS-GIT_COMMIT`,
 `TESTS_ADDED`, and `PR_URL`. `TESTS_ADDED` is the count of changed test files,
 not their path list; `PR_URL` is empty when no PR/MR is created. The generation
@@ -233,6 +240,71 @@ admission behavior, workspace/credential isolation, egress/resource enforcement,
 actual cancellation/teardown, or artifact survival after pruning. Those require
 integration on a recorded platform/profile. The same provider conformance contract
 must remain usable by a non-Tekton adapter.
+
+## Bounded Spring Baseline Probe
+
+`spring-profile-validation.yaml` is an explicitly launched development Pod, not
+an execution profile, production worker, or Go-provider integration. It checks
+out the pinned application with a digest-pinned Git image, then uses the
+digest-pinned Java 17/Maven image for clean package, focused test, verify, and a
+resolved dependency inventory. It makes no model calls, pushes, or PRs and mounts
+no Secrets or API token. This probe resolves from public Maven Central; it does
+not validate the demo's credential-bearing Artifactory settings.
+
+The 2026-11-20 run passed 121 tests in package, 7 focused tests, and the same 121
+tests in verify, with no failures, errors, or skips. The full inventories, timing,
+worker identity, failed probe attempts, and retained archive digest are recorded
+in the [runtime evidence](../../docs/architecture/flpath-5048-runtime.md#bounded-baseline-validation-2026-11-20).
+
+The Pod requests only 25m CPU because the development workers were almost fully
+reserved despite low measured utilization. This is a scheduling workaround, not
+production sizing. The Maven container still has a 2-core/4Gi limit, a 2Gi memory
+request, a 4-GiB ephemeral-storage limit, and a 900-second overall deadline. No
+existing workloads are resized by the manifest. Review the manifest and cluster
+capacity before launching it elsewhere; it does not enforce egress/PID policy.
+The observed run was admitted with the existing `artifactory-scc` and `default`
+service account. Its fixed UID/fsGroup must be reviewed for another namespace's
+SCC policy; this manifest does not grant permissions or prove restricted-SCC
+compatibility.
+
+After authenticating and checking development-cluster health, use an explicit
+context/namespace and a new archive destination:
+
+```sh
+set -euo pipefail
+umask 077
+: "${ATG_KUBE_CONTEXT:?Set the development cluster context}"
+: "${ATG_NAMESPACE:?Set the development namespace}"
+: "${ATG_EVIDENCE_ARCHIVE:?Set a new local evidence archive path}"
+test ! -e "$ATG_EVIDENCE_ARCHIVE"
+POD="$(oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" create -f deploy/development-harness/spring-profile-validation.yaml -o name)"
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" wait --for=condition=Initialized "$POD" --timeout=90s
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" wait --for=condition=Ready "$POD" --timeout=780s
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" exec "$POD" -c maven -- tar -C /workspace -cf - evidence > "$ATG_EVIDENCE_ARCHIVE"
+```
+
+Readiness means evidence is collectible, **not that validation passed**. Retain
+the Pod UID, resolved image IDs, and effective resource/security settings too.
+Check the archive's digest, every phase exit code, nonempty XML report inventories,
+test IDs/counts and outcomes before acknowledging collection. Missing reports or
+timed-out commands are not passing tests. Keep phase directories separate: the
+focused reports must not include stale full-suite XML. These tests include eight
+integration classes under Surefire and must not be described as unit-only.
+
+Only after verified retention, release the collector barrier. For a successful
+run, confirm termination and delete only the recorded Pod:
+
+```sh
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" exec "$POD" -c maven -- /bin/sh -c 'printf "collected\n" > /workspace/release'
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" wait --for=jsonpath='{.status.phase}'=Succeeded "$POD" --timeout=60s
+oc --context="$ATG_KUBE_CONTEXT" -n "$ATG_NAMESPACE" delete "$POD" --wait=true --timeout=30s
+```
+
+For failures, preserve the failed or `not_reached` outcomes and confirm failed
+termination instead; do not reinterpret them as success to perform cleanup.
+The overall deadline includes collection. A hung collector is bounded, but the
+ephemeral workspace can disappear without a retained archive. Local retention
+does not satisfy production-durable artifact publication or profile approval.
 
 ## Local Component
 

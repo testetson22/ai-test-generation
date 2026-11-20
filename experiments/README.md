@@ -42,3 +42,49 @@ revise the boundary explicitly with compatibility tests rather than hiding it.
 Test substitutes are injected only in test/development composition, clearly
 identified as simulated evidence, and never a production fallback or grounds for
 closing a spike. Missing production adapters fail readiness/dispatch explicitly.
+
+## FLPATH-5050 Campaign Findings (2026-11-20)
+
+The [two-task campaign and Aider diagnostic findings](https://raw.githubusercontent.com/vkolodny/ai-test-generation/refs/heads/flpath-5050-fake-model-replay/experiments/harness/FLPATH-5050-campaign-findings.md)
+are experiment evidence, not a harness selection. The report says all formal
+candidate decisions remain `insufficient_evidence`; its retained archives are
+host-local and are not copied into this repository.
+
+FLPATH-5050 is ready to close as an investigation spike with these findings and
+limitations recorded. Harness assessment will continue after the campaign
+changes are merged. The follow-ups below are subsequent assessment work, not
+blockers to spike closure; closing the spike does not select or approve a
+production harness or change the report's candidate dispositions.
+
+- Each tool had one attempt per task against the same model endpoint/model. All
+  four candidates discriminated the Quarkus defect. Pydantic AI, Claude Code,
+  and LangGraph discriminated the Spring defect; Aider timed out during Analyze
+  in that run.
+- Aider later discriminated the Spring defect in a diagnostic, but the changed
+  run specification and evaluator make it a separate provenance cohort, not a
+  fixed-configuration repeat or reliability estimate. The reported repeated
+  Analyze log blocks still need investigation.
+- The Spring coverage target must be `parseAndCreateTransactions`, where the
+  changed condition resides, rather than `importStatement`. The corrected
+  archived-XML analysis reports 45/45 lines and 25/28 branches before and after
+  each successful test (zero delta). This does not negate defect detection:
+  the prior suite executed the branch without asserting the lower-case behavior.
+  The original campaign remains `coverage_unknown`; derived XML analysis does
+  not rewrite its raw result. The Quarkus fixture has no method-coverage
+  contract, so coverage is `not_applicable` there.
+- QE's semantic test review is separate from the campaign machine report's
+  pending semantic-review status. Named formal decisions with authorization
+  references remain outstanding. The common model also means the campaign does
+  not compare model quality.
+- Follow-ups are to investigate the Aider Analyze loop and repeat under a fixed
+  configuration, use the corrected Spring coverage target, and add another
+  distinct task or repository before recording formal candidate decisions.
+- The security review found no blocker for these four candidates. Before a
+  future third-party adapter-image run, review and allowlist the exact image and
+  restrict egress or use an experiment-scoped credential; the referenced
+  `run_comparison.py` passes `ENMAAS_API_KEY` to `/adapter` with host networking.
+
+Continue the post-merge assessment behind the existing provider-neutral harness
+boundary, retaining deterministic replay substitutes for test/development use.
+Production harness selection remains a separate decision; do not promote any
+campaign candidate into runtime composition based on this report alone.
