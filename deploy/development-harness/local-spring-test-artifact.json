@@ -1,0 +1,12 @@
+{
+  "schema_version": "1",
+  "files": [
+    {
+      "path": "src/test/java/com/redhat/lightwell/service/AtgStatementImportTest.java",
+      "content": "package com.redhat.lightwell.service;\n\nimport java.math.BigDecimal;\nimport java.util.Optional;\nimport com.redhat.lightwell.model.Account;\nimport com.redhat.lightwell.model.AccountType;\nimport com.redhat.lightwell.model.Customer;\nimport com.redhat.lightwell.model.Transaction;\nimport com.redhat.lightwell.model.dto.StatementImportResponse;\nimport com.redhat.lightwell.repository.AccountRepository;\nimport com.redhat.lightwell.repository.TransactionRepository;\nimport org.junit.jupiter.api.Test;\nimport org.junit.jupiter.api.extension.ExtendWith;\nimport org.mockito.InjectMocks;\nimport org.mockito.Mock;\nimport org.mockito.junit.jupiter.MockitoExtension;\nimport static org.assertj.core.api.Assertions.assertThat;\nimport static org.mockito.ArgumentMatchers.any;\nimport static org.mockito.Mockito.when;\n\n@ExtendWith(MockitoExtension.class)\nclass AtgStatementImportTest {\n    @Mock private AccountRepository accounts;\n    @Mock private TransactionRepository transactions;\n    @Mock private AuditService audit;\n    @InjectMocks private StatementImportService service;\n\n    @Test\n    void importsLowerCaseDeposit() {\n        Customer customer = new Customer(\"Development\", \"Fixture\", \"fixture@example.invalid\", \"555-0100\");\n        Account account = new Account(\"ACC-ATG\", AccountType.CHECKING, new BigDecimal(\"1000.00\"), customer);\n        when(accounts.findById(1L)).thenReturn(Optional.of(account));\n        when(accounts.save(any(Account.class))).thenAnswer(call -> call.getArgument(0));\n        when(transactions.save(any(Transaction.class))).thenAnswer(call -> call.getArgument(0));\n\n        StatementImportResponse response = service.importStatement(1L,\n                \"<statement><transaction><type>deposit</type><amount>25.50</amount>\"\n                + \"<description>Local execution fixture</description></transaction></statement>\");\n\n        assertThat(response.getStatus()).isEqualTo(\"SUCCESS\");\n        assertThat(response.getTransactionsImported()).isEqualTo(1);\n        assertThat(account.getBalance()).isEqualByComparingTo(new BigDecimal(\"1025.50\"));\n    }\n}\n"
+    }
+  ],
+  "expected_test_ids": [
+    "com.redhat.lightwell.service.AtgStatementImportTest#importsLowerCaseDeposit"
+  ]
+}

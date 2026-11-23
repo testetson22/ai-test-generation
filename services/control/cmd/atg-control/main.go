@@ -22,15 +22,30 @@ func main() {
 		logger.Error("invalid control service configuration", "error", err)
 		os.Exit(2)
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var local *localRuntime
+	if os.Getenv("ATG_MODE") == "local-development" {
+		startupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		local, err = newLocalRuntime(startupCtx, os.Getenv, logger)
+		cancel()
+		if err != nil {
+			logger.Error("local development startup failed", "error", err)
+			os.Exit(2)
+		}
+		handler = local.service.Handler()
+		driverCtx, cancelDriver := context.WithCancel(ctx)
+		driverDone := make(chan struct{})
+		go func() { defer close(driverDone); _ = local.service.Run(driverCtx) }()
+		defer func() { cancelDriver(); <-driverDone; local.Close() }()
+	}
 
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	serveErr := make(chan error, 1)
 	go func() {
@@ -62,15 +77,18 @@ func serverConfiguration(mode, configuredAddress string) (http.Handler, string, 
 		}
 		return httpapi.NewHandler(httpapi.Dependencies{}), address, nil
 	}
-	if mode != "offline-simulation" {
-		return nil, "", errors.New("ATG_MODE must be empty or offline-simulation; production composition is not available")
+	if mode != "offline-simulation" && mode != "local-development" {
+		return nil, "", errors.New("ATG_MODE must be empty, offline-simulation, or local-development; production composition is not available")
 	}
 	address := configuredAddress
 	if address == "" {
 		address = "127.0.0.1:8080"
 	}
 	if !loopbackAddress(address) {
-		return nil, "", errors.New("offline-simulation mode requires ATG_LISTEN_ADDR to use a loopback IP address")
+		return nil, "", errors.New("development modes require ATG_LISTEN_ADDR to use a loopback IP address")
+	}
+	if mode == "local-development" {
+		return httpapi.NewHandler(httpapi.Dependencies{}), address, nil
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/", httpapi.NewHandler(httpapi.Dependencies{}))

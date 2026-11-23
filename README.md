@@ -26,7 +26,7 @@ material. They do not define the ATG architecture or authoritative Java target.
 - `tests/README.md` - local, component, replay, and integration validation.
 - `experiments/README.md` - temporary harness and provider experiments.
 - `deploy/README.md` - development-harness and final-demo composition boundaries.
-- `deploy/development-harness/README.md` - legacy demo reuse assessment and temporary playground boundaries.
+- `deploy/development-harness/README.md` - standalone local execution, validation, and legacy demo reuse boundaries.
 
 ## Current Target
 

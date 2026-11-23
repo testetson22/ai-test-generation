@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/artifact"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgenflow"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgensim"
 )
@@ -23,19 +25,26 @@ type TestGenerationDevelopmentConfig struct {
 	ProfileVersion    string
 	ProfileDigest     string
 	MaxAttempts       int
+	InputMode         string
+	CompletionMode    string
 	Now               func() time.Time
 }
 
 type TestGenerationDevelopmentAPI struct {
-	Repository testgenflow.Repository
-	Config     TestGenerationDevelopmentConfig
+	Repository           testgenflow.Repository
+	Config               TestGenerationDevelopmentConfig
+	Artifacts            artifact.Store
+	ValidateTestArtifact func([]byte) error
+	MaxTestArtifactBytes int64
+	Operations           func(context.Context, string) ([]testgenflow.Operation, error)
 }
 
 type StartTestGenerationDevelopmentRequest struct {
-	BaseBranch   string `json:"base_branch,omitempty"`
-	IssueIID     string `json:"issue_iid,omitempty"`
-	Subdirectory string `json:"subdirectory,omitempty"`
-	VerifyCommit bool   `json:"verify_commit,omitempty"`
+	BaseBranch          string `json:"base_branch,omitempty"`
+	IssueIID            string `json:"issue_iid,omitempty"`
+	Subdirectory        string `json:"subdirectory,omitempty"`
+	VerifyCommit        bool   `json:"verify_commit,omitempty"`
+	InputArtifactDigest string `json:"input_artifact_digest,omitempty"`
 }
 
 type TestGenerationDevelopmentResponse struct {
@@ -94,6 +103,14 @@ func validTestGenerationScenario(scenario testgensim.Scenario) bool {
 func (a *TestGenerationDevelopmentAPI) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /development/test-generation-runs", a.createRun)
 	mux.HandleFunc("GET /development/test-generation-runs/{runID}", a.getRun)
+	if a.Artifacts != nil && a.ValidateTestArtifact != nil {
+		mux.HandleFunc("POST /development/test-generation-runs/{runID}/cancel", a.cancelRun)
+		mux.HandleFunc("POST /development/test-artifacts", a.uploadTestArtifact)
+		mux.HandleFunc("GET /development/artifacts/{digest}", a.getArtifact)
+		if a.Operations != nil {
+			mux.HandleFunc("GET /development/test-generation-runs/{runID}/operations", a.getOperations)
+		}
+	}
 }
 
 func (a *TestGenerationDevelopmentAPI) Ready() bool {
@@ -108,6 +125,14 @@ func (a *TestGenerationDevelopmentAPI) Ready() bool {
 		ProfileID:      a.Config.ProfileID,
 		ProfileVersion: a.Config.ProfileVersion,
 		ProfileDigest:  a.Config.ProfileDigest,
+		InputMode:      a.Config.InputMode,
+		CompletionMode: a.Config.CompletionMode,
+	}
+	if a.Config.InputMode == testgenflow.InputModeArtifactInput {
+		if a.Artifacts == nil || a.ValidateTestArtifact == nil {
+			return false
+		}
+		request.InputArtifactDigest = "sha256:" + strings.Repeat("0", 64)
 	}
 	return request.Validate() == nil
 }
@@ -144,15 +169,29 @@ func (a *TestGenerationDevelopmentAPI) createRun(w http.ResponseWriter, r *http.
 		subdirectory = a.Config.Subdirectory
 	}
 	request := testgenflow.Request{
-		RepositoryURL:  a.Config.RepositoryURL,
-		Revision:       a.Config.PinnedRevision,
-		BaseBranch:     baseBranch,
-		IssueIID:       input.IssueIID,
-		Subdirectory:   subdirectory,
-		ProfileID:      a.Config.ProfileID,
-		ProfileVersion: a.Config.ProfileVersion,
-		ProfileDigest:  a.Config.ProfileDigest,
-		VerifyCommit:   input.VerifyCommit,
+		RepositoryURL:       a.Config.RepositoryURL,
+		Revision:            a.Config.PinnedRevision,
+		BaseBranch:          baseBranch,
+		IssueIID:            input.IssueIID,
+		Subdirectory:        subdirectory,
+		ProfileID:           a.Config.ProfileID,
+		ProfileVersion:      a.Config.ProfileVersion,
+		ProfileDigest:       a.Config.ProfileDigest,
+		VerifyCommit:        input.VerifyCommit,
+		InputMode:           a.Config.InputMode,
+		CompletionMode:      a.Config.CompletionMode,
+		InputArtifactDigest: input.InputArtifactDigest,
+	}
+	if a.Config.InputMode == testgenflow.InputModeArtifactInput {
+		if input.VerifyCommit || baseBranch != a.Config.DefaultBaseBranch || subdirectory != a.Config.Subdirectory {
+			writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "unsupported_local_execution_options")
+			return
+		}
+		data, err := a.Artifacts.Get(r.Context(), input.InputArtifactDigest, a.testArtifactLimit())
+		if err != nil || a.ValidateTestArtifact(data) != nil {
+			writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "invalid_input_artifact")
+			return
+		}
 	}
 	runID, err := testgenflow.NewRunID()
 	if err != nil {

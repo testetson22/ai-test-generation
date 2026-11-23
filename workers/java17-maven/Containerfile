@@ -1,0 +1,7 @@
+FROM docker.io/library/maven@sha256:7d92f4b97ceca94699c70dfe41e186115de1a9e34dd50413ab3f96ce32bc60ec
+LABEL io.lightpath.atg.worker="java17-maven-v1"
+COPY worker.sh /opt/atg/worker.sh
+RUN chmod 0555 /opt/atg/worker.sh
+USER 65532:65532
+WORKDIR /work
+ENTRYPOINT ["/bin/bash", "/opt/atg/worker.sh"]

@@ -70,7 +70,7 @@ func TestPostgresTestGenerationFlowIdempotencyRevisionFencingAndRestart(t *testi
 		t.Fatalf("duplicate source event = %#v err=%v", duplicate, err)
 	}
 	conflicting := resolved
-	conflicting.ResolvedCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	conflicting.ResolvedCommit = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	if _, err := store.ApplyEvent(ctx, runID, conflicting); !errors.Is(err, testgenflow.ErrEventConflict) {
 		t.Fatalf("same event ID with new payload error = %v, want event conflict", err)
 	}

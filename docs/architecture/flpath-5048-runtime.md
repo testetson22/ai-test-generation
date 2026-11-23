@@ -472,6 +472,83 @@ publication, actual Maven runner/provider wiring, generation-worker handoff,
 and any source change/differential or full demo integration. This probe does
 not resolve FLPATH-5051 or select a FLPATH-5050 harness.
 
+### Standalone Local Execution Service (2026-11-23)
+
+The explicit loopback `ATG_MODE=local-development` now composes the Go service
+with real PostgreSQL, the persistent development FileStore, and a rootless local
+Podman adapter. It requires no cluster or Python reference service. Default
+production execution-pair routes remain unconfigured; the offline simulator is
+unchanged. See the [local build/start instructions](../../deploy/development-harness/README.md#standalone-local-execution).
+
+This first service slice admits a **supplied** bounded Java test artifact using
+`input_mode: artifact_input` and `completion_mode: patch_only`. It does not
+pretend that input was generated: generation attempts remain empty, no harness
+or model is invoked, no reviewer approval is fabricated, and SCM is never
+called. The source/profile/layout are server-owned, not caller shell commands.
+The local profile is an explicit development policy, not an approved production
+execution profile or a substitute for the generic execution API's review gates.
+
+The workflow now binds focused requests to the pending artifact/patch/paths and
+repair attempt, and final verification to the accepted candidate. New modes are
+explicit and digest-bound; omitted modes retain historical generation/PR JSON
+and replay semantics. Migration `0004_local_test_generation.sql` adds fenced
+claims and an immutable operation journal without replacing run-event CAS.
+Intent precedes dispatch, completed observations are reused after lost
+acknowledgements, and missing ambiguous jobs become `outcome_unknown` rather
+than triggering replacement work. Cancellation confirms termination and retains
+partial evidence. A separately journaled provisional result makes final
+publication recoverable after worker cleanup.
+
+There is one independently buildable worker recipe/entrypoint at
+`workers/java17-maven/`, not local/Tekton image variants. The controller passes
+the validated source identity to the image instead of baking application source
+into it. The adapter freezes the resolved **local image ID** and retains exact
+profile bytes plus their image binding; a different image creates a different
+dispatch-profile digest. Native unit tests do not require a sibling checkout;
+the workload profile is an explicitly configured shared test artifact. Registry
+publishing is unnecessary for local builds/runs and was not performed.
+
+Successful native ARM64 HTTP validation:
+
+- Run `testgen-run-da9d7639b56ec1ea43457395b4f0d63e`, pinned application source
+  `01a18a1b40e151ffcc1d7bef86bf335f87999750`.
+- Worker base index
+  `docker.io/library/maven@sha256:7d92f4b97ceca94699c70dfe41e186115de1a9e34dd50413ab3f96ce32bc60ec`;
+  resolved local worker image
+  `sha256:358db5e07f729187038d1743d31938f7118d34bc2da858782240320f999f60d1`.
+- Observed Temurin OpenJDK 17.0.21+9, Maven 3.10.0, Git 2.53.0, Linux/aarch64.
+  This is a newly measured environment, not the November 20 AMD64/UBI worker.
+- Bound development profile
+  `sha256:bc2d2c4d146e437ffc19163110bac1007795d708a66831e14166cfca420ed975`.
+- Baseline `clean package`: 121 passed. Supplied lowercase XML-deposit test:
+  1 passed under focused `clean test`. Final `clean verify`: 122 passed.
+- The API/controller process was killed during baseline execution. The restarted
+  service reconciled the same baseline worker
+  `cb37e71b69cec9507faa1a8b518cc791ce135636dd9a71485817271259382559`;
+  successful final evidence identifies that worker, not a replacement.
+- Final result
+  `sha256:b922e1c3af126116faf953743e4da5e53e246a83ceab5971202f07459fee00b6`.
+  The opt-in HTTP client verified 65 artifact hashes, exact test inventories,
+  raw XML, checked patch bytes, source identity, and post-cleanup publication.
+- Separate run `testgen-run-ce40a98ee2af7c4130b720cb5ec6d535` was cancelled
+  during actual Maven work; its retained termination manifest is
+  `sha256:b9fff5ffcca3d0b4f7cbbc4db544e3665486c4745312d76c8c09af2f05682b53`.
+  Readiness also returned 503 during a deliberate local database pause and
+  returned 200 after resume. No cluster resources were involved.
+
+Each operation gets a fresh checkout/cache in bounded tmpfs, nonroot UID,
+read-only root, dropped capabilities, CPU/memory/PID/file-size/time bounds, and
+no host/socket mounts or credentials. Public egress is deliberately allowed,
+not represented as a network allowlist. The service uses public Maven Central,
+not the Artifactory settings path. The sandbox does not establish production
+adversarial-code containment. File-size limits were corrected to 512MiB after
+initial failed probes; those outcomes remain failed, not rewritten as successes.
+
+Evidence and summaries persist locally under ignored `.kilo/` storage. This
+closes the execution-only local-service gap, not live Analyze/Plan/Code,
+production profile authorization, S3 publication, a concrete Tekton API client,
+VPE/VEX integration, harness selection, or differential remediation proof.
+
 ## Reconsideration Conditions
 
 Revisit a choice only with concrete evidence that it blocks a required supported

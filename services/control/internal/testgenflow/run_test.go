@@ -1,7 +1,11 @@
 package testgenflow
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,6 +176,20 @@ func TestCancellationRequiresConfirmedTermination(t *testing.T) {
 	}
 }
 
+func TestCancellationRetainsOptionalEvidenceWithoutInventingPublication(t *testing.T) {
+	run := coordinatorRunAtStage(t, StagePublishPatch)
+	run = apply(t, run, Event{Type: EventCancelRequested}, run.UpdatedAt.Add(time.Second))
+	for _, invalid := range []string{" ", "artifact://partial\nunsafe", strings.Repeat("x", 2049)} {
+		if _, err := run.Apply(Event{ID: "invalid-cancel-evidence", ExpectedRevision: run.Revision, Type: EventCancelled, TerminationConfirmed: true, EvidenceRef: invalid, OccurredAt: run.UpdatedAt.Add(time.Second)}); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("invalid cancellation evidence was accepted: %v", err)
+		}
+	}
+	cancelled := apply(t, run, Event{Type: EventCancelled, TerminationConfirmed: true, EvidenceRef: "artifact://partial-evidence-and-termination"}, run.UpdatedAt.Add(time.Second))
+	if cancelled.Status != StatusCancelled || cancelled.EvidenceRef != "artifact://partial-evidence-and-termination" || cancelled.ResultArtifactRef != "" || cancelled.PRURL != "" {
+		t.Fatalf("cancellation evidence/result = %#v", cancelled)
+	}
+}
+
 func TestCompatibilityResultsMatchLegacyPipelineFieldsAndKeepTaskResultsSeparate(t *testing.T) {
 	run := startGeneration(t, newRun(t, false, 6))
 	run = generateCandidate(t, run, run.UpdatedAt.Add(time.Second))
@@ -210,6 +228,165 @@ func TestStaleRevisionAndOutOfOrderTimestampAreRejected(t *testing.T) {
 	run = apply(t, run, Event{Type: EventSourceResolved, ResolvedCommit: testCommit}, run.CreatedAt.Add(2*time.Second))
 	if _, err := run.Apply(Event{ID: "old-time", ExpectedRevision: run.Revision, Type: EventBaselineCompleted, Succeeded: true, OccurredAt: run.CreatedAt.Add(time.Second)}); err == nil {
 		t.Fatal("out-of-order event timestamp was accepted")
+	}
+}
+
+func TestRequestModesRequireExplicitValidArtifactAndCompletionPolicy(t *testing.T) {
+	request := newRun(t, false, 3).Request
+	for name, mutate := range map[string]func(*Request){
+		"unknown input mode":      func(request *Request) { request.InputMode = "generation" },
+		"missing artifact digest": func(request *Request) { request.InputMode = InputModeArtifactInput },
+		"invalid artifact digest": func(request *Request) {
+			request.InputMode = InputModeArtifactInput
+			request.InputArtifactDigest = "artifact://uploaded"
+		},
+		"digest without artifact mode": func(request *Request) { request.InputArtifactDigest = digest([]byte("uploaded")) },
+		"unknown completion mode":      func(request *Request) { request.CompletionMode = "pull_request" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := request
+			mutate(&invalid)
+			if err := invalid.Validate(); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("invalid request error = %v", err)
+			}
+		})
+	}
+}
+
+func TestRequestDigestAndIdempotencyBindModesAndInputArtifact(t *testing.T) {
+	legacy := newRun(t, false, 3)
+	artifact := coordinatorRunAtStage(t, StageSource)
+	artifact.Request.CompletionMode = ""
+	for _, base := range []Run{legacy, artifact} {
+		for _, field := range []string{"input", "completion"} {
+			t.Run(base.Request.InputMode+"/"+field, func(t *testing.T) {
+				request := base.Request
+				if field == "completion" {
+					request.CompletionMode = CompletionModePatchOnly
+				} else if request.InputMode == "" {
+					request.InputMode = InputModeArtifactInput
+					request.InputArtifactDigest = digest([]byte("first upload"))
+				} else {
+					request.InputArtifactDigest = digest([]byte("changed upload"))
+				}
+				original, err := NewRun(base.RunID, base.IdempotencyKey, base.Request, base.MaxAttempts, base.CreatedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				changed, err := NewRun(base.RunID+"-changed", base.IdempotencyKey, request, base.MaxAttempts, base.CreatedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if changed.RequestDigest == original.RequestDigest {
+					t.Fatalf("request digest did not bind %s", field)
+				}
+				repository := newMemoryRepository()
+				if _, _, err := repository.CreateRun(context.Background(), original); err != nil {
+					t.Fatal(err)
+				}
+				if _, _, err := repository.CreateRun(context.Background(), changed); !errors.Is(err, ErrIdempotencyConflict) {
+					t.Fatalf("changed %s reused idempotency key: %v", field, err)
+				}
+			})
+		}
+	}
+}
+
+func TestLegacyOmittedModesPreservePersistedJSONDigestsAndReplay(t *testing.T) {
+	const oldRequestJSON = `{"repository_url":"https://gitlab.example/group/spring-demo.git","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","base_branch":"main","issue_iid":"42","subdirectory":"source","profile_id":"spring-java17-maven","profile_version":"0.1.0","profile_digest":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","verify_commit":false}`
+	oldDigest := digest([]byte(`{"request":` + oldRequestJSON + `,"max_attempts":6}`))
+	oldRunJSON := `{"run_id":"testgen-run-1","idempotency_key":"gitlab:issue:42:rev-1","request_digest":"` + oldDigest + `","request":` + oldRequestJSON + `,"status":"queued","stage":"source","revision":1,"max_attempts":6,"generation_attempts":[],"tests_added":0,"changed_test_paths":[],"pr_url":"","created_at":"2026-11-18T12:00:00Z","updated_at":"2026-11-18T12:00:00Z"}`
+	var run Run
+	if err := json.Unmarshal([]byte(oldRunJSON), &run); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Validate(); err != nil {
+		t.Fatalf("persisted legacy run rejected: %v", err)
+	}
+	encoded, err := json.Marshal(run)
+	if err != nil || string(encoded) != oldRunJSON || run.RequestDigest != newRun(t, false, 6).RequestDigest {
+		t.Fatalf("legacy persisted JSON/digest changed: json=%s err=%v", encoded, err)
+	}
+	for _, event := range []Event{
+		{Type: EventSourceResolved, ResolvedCommit: testCommit},
+		{Type: EventBaselineCompleted, Succeeded: true},
+		{Type: EventGenerationStarted},
+		{Type: EventGenerationCompleted, ChangedTestPaths: []string{"src/test/java/example/GeneratedTest.java"}, PatchDigest: digest([]byte("legacy patch"))},
+		{Type: EventFocusedTestCompleted, Succeeded: true, EvidenceRef: "artifact://focused"},
+		{Type: EventFinalVerifyCompleted, Succeeded: true, EvidenceRef: "artifact://verify"},
+		{Type: EventPRCompleted, Succeeded: true, PRURL: "https://git.example/pr/42"},
+	} {
+		run = apply(t, run, event, run.UpdatedAt.Add(time.Second))
+		encoded, err = json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored Run
+		if err := json.Unmarshal(encoded, &restored); err != nil || restored.Validate() != nil || !reflect.DeepEqual(restored, run) {
+			t.Fatalf("legacy replay did not roundtrip: %#v, err=%v", restored, err)
+		}
+		for _, field := range []string{"input_mode", "input_artifact_digest", "completion_mode", "candidate", "test_artifact_digest", "result_artifact_ref"} {
+			if strings.Contains(string(encoded), `"`+field+`"`) {
+				t.Fatalf("legacy JSON gained %s: %s", field, encoded)
+			}
+		}
+	}
+	if run.Status != StatusCompleted || run.AttemptCount() != 1 || run.PRURL == "" || run.Candidate != nil || run.ResultArtifactRef != "" {
+		t.Fatalf("legacy PR flow changed: %#v", run)
+	}
+	oldEventJSON := `{"event_id":"legacy-source","expected_revision":1,"event_type":"source_resolved","occurred_at":"2026-11-18T12:00:01Z","resolved_commit":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`
+	var oldEvent Event
+	if err := json.Unmarshal([]byte(oldEventJSON), &oldEvent); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(oldEvent)
+	if err != nil || string(encoded) != oldEventJSON {
+		t.Fatalf("legacy event payload/digest changed: %s, %v", encoded, err)
+	}
+}
+
+func TestArtifactCandidateAcceptanceBindsPathsPatchAndRetrievableArtifact(t *testing.T) {
+	pending := coordinatorRunAtStage(t, StageFocusedTest)
+	accepted := apply(t, pending, Event{Type: EventFocusedTestCompleted, Succeeded: true, EvidenceRef: "artifact://focused"}, pending.UpdatedAt.Add(time.Second))
+	if pending.Candidate.Status != AttemptGenerated || pending.TestsAdded != 0 || accepted.Candidate.Status != AttemptAccepted || accepted.TestArtifactDigest != pending.Candidate.TestArtifactDigest {
+		t.Fatalf("artifact acceptance lost isolation/binding: pending=%#v accepted=%#v", pending, accepted)
+	}
+	for name, mutate := range map[string]func(*Run){
+		"accepted paths":     func(run *Run) { run.ChangedTestPaths[0] = "src/test/java/example/OtherTest.java" },
+		"accepted patch":     func(run *Run) { run.PatchDigest = digest([]byte("different patch")) },
+		"accepted artifact":  func(run *Run) { run.TestArtifactDigest = digest([]byte("different artifact")) },
+		"candidate artifact": func(run *Run) { run.Candidate.TestArtifactDigest = digest([]byte("different artifact")) },
+		"fake generation attempt": func(run *Run) {
+			run.Attempts = []GenerationAttempt{{Number: 1, Status: AttemptAccepted, StartedAt: run.CreatedAt}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			corrupt := cloneRun(accepted)
+			mutate(&corrupt)
+			if err := corrupt.Validate(); !errors.Is(err, ErrInvalidRun) {
+				t.Fatalf("corrupt artifact binding accepted: %#v, err=%v", corrupt, err)
+			}
+		})
+	}
+	artifactStage := coordinatorRunAtStage(t, StageArtifactInput)
+	if _, err := artifactStage.Apply(Event{ID: "fake-generation", ExpectedRevision: artifactStage.Revision, Type: EventGenerationStarted, OccurredAt: artifactStage.UpdatedAt.Add(time.Second)}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("artifact input created a generation attempt: %v", err)
+	}
+	if _, err := accepted.Apply(Event{ID: "publish-before-verify", ExpectedRevision: accepted.Revision, Type: EventPatchPublished, Succeeded: true, ResultArtifactRef: "artifact://patch", OccurredAt: accepted.UpdatedAt.Add(time.Second)}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("publication bypassed final verification: %v", err)
+	}
+}
+
+func TestReconcileOnlyDoesNotChangeOperationInputJSON(t *testing.T) {
+	work := WorkRequest{RunID: "run-1", TestArtifactDigest: digest([]byte("artifact")), PatchDigest: digest([]byte("patch"))}
+	before, err := json.Marshal(work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work.ReconcileOnly = true
+	after, err := json.Marshal(work)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("reconciliation changed immutable work digest: before=%s after=%s err=%v", before, after, err)
 	}
 }
 

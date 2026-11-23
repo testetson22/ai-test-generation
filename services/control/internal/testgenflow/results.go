@@ -8,13 +8,14 @@ import (
 )
 
 type PipelineResults struct {
-	ChainsGitURL    string `json:"CHAINS-GIT_URL"`
-	ChainsGitCommit string `json:"CHAINS-GIT_COMMIT"`
-	TestsAdded      string `json:"TESTS_ADDED"`
-	PRURL           string `json:"PR_URL"`
-	RunRef          string `json:"RUN_REF"`
-	EvidenceRef     string `json:"EVIDENCE_REF"`
-	TerminalStatus  string `json:"terminal_status"`
+	ChainsGitURL      string `json:"CHAINS-GIT_URL"`
+	ChainsGitCommit   string `json:"CHAINS-GIT_COMMIT"`
+	TestsAdded        string `json:"TESTS_ADDED"`
+	PRURL             string `json:"PR_URL"`
+	RunRef            string `json:"RUN_REF"`
+	EvidenceRef       string `json:"EVIDENCE_REF"`
+	ResultArtifactRef string `json:"RESULT_ARTIFACT_REF,omitempty"`
+	TerminalStatus    string `json:"terminal_status"`
 }
 
 type GenerationTaskResults struct {
@@ -26,13 +27,14 @@ type GenerationTaskResults struct {
 func (r Run) CompatibilityResults() (PipelineResults, GenerationTaskResults) {
 	testsAdded := strconv.Itoa(r.TestsAdded)
 	return PipelineResults{
-			ChainsGitURL:    r.Request.RepositoryURL,
-			ChainsGitCommit: r.ResolvedCommit,
-			TestsAdded:      testsAdded,
-			PRURL:           r.PRURL,
-			RunRef:          r.RunID,
-			EvidenceRef:     r.EvidenceRef,
-			TerminalStatus:  string(r.Status),
+			ChainsGitURL:      r.Request.RepositoryURL,
+			ChainsGitCommit:   r.ResolvedCommit,
+			TestsAdded:        testsAdded,
+			PRURL:             r.PRURL,
+			RunRef:            r.RunID,
+			EvidenceRef:       r.EvidenceRef,
+			ResultArtifactRef: r.ResultArtifactRef,
+			TerminalStatus:    string(r.Status),
 		}, GenerationTaskResults{
 			TestsAdded: testsAdded,
 			Attempts:   strconv.Itoa(r.AttemptCount()),

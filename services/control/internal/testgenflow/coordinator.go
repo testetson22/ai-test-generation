@@ -8,14 +8,19 @@ import (
 	"time"
 )
 
+var ErrWorkPending = errors.New("test-generation worker operation is pending")
+
 type WorkRequest struct {
-	RunID            string
-	IdempotencyKey   string
-	Request          Request
-	ResolvedCommit   string
-	Attempt          int
-	ChangedTestPaths []string
-	RepairFeedback   string
+	RunID              string
+	IdempotencyKey     string
+	Request            Request
+	ResolvedCommit     string
+	Attempt            int
+	ChangedTestPaths   []string
+	RepairFeedback     string
+	TestArtifactDigest string
+	PatchDigest        string
+	ReconcileOnly      bool `json:"-"`
 }
 
 type MavenPhase string
@@ -32,8 +37,9 @@ type MavenWorkRequest struct {
 }
 
 type GenerationResult struct {
-	ChangedTestPaths []string
-	PatchDigest      string
+	ChangedTestPaths   []string
+	PatchDigest        string
+	TestArtifactDigest string
 }
 
 type MavenResult struct {
@@ -58,7 +64,12 @@ func (f *WorkerFailure) Error() string {
 	return "worker operation failed"
 }
 
-func (f *WorkerFailure) Unwrap() error { return f.Cause }
+func (f *WorkerFailure) Unwrap() error {
+	if f == nil {
+		return nil
+	}
+	return f.Cause
+}
 
 type SourceProvider interface {
 	ResolveSource(context.Context, WorkRequest) (string, error)
@@ -72,6 +83,10 @@ type GenerationWorker interface {
 	GenerateTests(context.Context, WorkRequest) (GenerationResult, error)
 }
 
+type ArtifactInputProvider interface {
+	PrepareTestArtifact(context.Context, WorkRequest) (GenerationResult, error)
+}
+
 type MavenProfileRunner interface {
 	RunMaven(context.Context, MavenWorkRequest) (MavenResult, error)
 }
@@ -80,22 +95,34 @@ type SCMWorker interface {
 	OpenTestsPR(context.Context, WorkRequest) (string, error)
 }
 
+type PatchPublisher interface {
+	PublishPatch(context.Context, WorkRequest) (string, error)
+}
+
 type Coordinator struct {
-	Repository Repository
-	Source     SourceProvider
-	Signature  SignatureVerifier
-	Generation GenerationWorker
-	Maven      MavenProfileRunner
-	SCM        SCMWorker
-	Now        func() time.Time
+	Repository    Repository
+	Source        SourceProvider
+	Signature     SignatureVerifier
+	Generation    GenerationWorker
+	ArtifactInput ArtifactInputProvider
+	Maven         MavenProfileRunner
+	SCM           SCMWorker
+	Publisher     PatchPublisher
+	Now           func() time.Time
 }
 
 func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
+	if err := ctx.Err(); err != nil {
+		return Run{}, err
+	}
 	if c == nil || c.Repository == nil || c.Now == nil {
 		return Run{}, fmt.Errorf("test-generation workflow coordinator is unconfigured")
 	}
 	run, err := c.Repository.GetRun(ctx, runID)
 	if err != nil {
+		return Run{}, err
+	}
+	if err := run.Validate(); err != nil {
 		return Run{}, err
 	}
 	if run.Status == StatusCompleted || run.Status == StatusFailed || run.Status == StatusCancelled || run.Status == StatusOutcomeUnknown {
@@ -133,24 +160,51 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 		if c.Generation == nil {
 			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "generation worker is unconfigured"})
 		}
-		if len(run.Attempts) == 0 || run.Attempts[len(run.Attempts)-1].Status != AttemptRunning {
+		started := len(run.Attempts) > 0 && run.Attempts[len(run.Attempts)-1].Status == AttemptRunning
+		attempt := run.AttemptCount()
+		if !started {
+			if attempt >= run.MaxAttempts {
+				return Run{}, fmt.Errorf("%w: generation attempts exhausted", ErrInvalidTransition)
+			}
+			attempt++
+		}
+		work := c.work(run, "generate", attempt)
+		work.ReconcileOnly = started
+		work.RepairFeedback = run.LastError
+		result, workErr := c.Generation.GenerateTests(ctx, work)
+		if ctx.Err() != nil || errors.Is(workErr, ErrWorkPending) || errors.Is(workErr, context.Canceled) || errors.Is(workErr, context.DeadlineExceeded) {
+			return c.fail(ctx, run, workerFailure(workErr))
+		}
+		// Pending work is journaled by the adapter, not as a completed domain event.
+		if !started {
 			run, err = c.record(ctx, run, Event{Type: EventGenerationStarted}, false)
 			if err != nil {
 				return Run{}, err
 			}
 		}
-		attempt := run.Attempts[len(run.Attempts)-1]
-		work := c.work(run, "generate", attempt.Number)
-		work.Attempt = attempt.Number
-		work.RepairFeedback = run.LastError
-		result, err := c.Generation.GenerateTests(ctx, work)
+		if workErr != nil {
+			return c.fail(ctx, run, workerFailure(workErr))
+		}
+		return c.record(ctx, run, Event{
+			Type:               EventGenerationCompleted,
+			ChangedTestPaths:   result.ChangedTestPaths,
+			PatchDigest:        result.PatchDigest,
+			TestArtifactDigest: result.TestArtifactDigest,
+		}, true)
+
+	case StageArtifactInput:
+		if c.ArtifactInput == nil {
+			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "artifact input provider is unconfigured"})
+		}
+		result, err := c.ArtifactInput.PrepareTestArtifact(ctx, c.work(run, "artifact-input", 0))
 		if err != nil {
 			return c.fail(ctx, run, workerFailure(err))
 		}
 		return c.record(ctx, run, Event{
-			Type:             EventGenerationCompleted,
-			ChangedTestPaths: result.ChangedTestPaths,
-			PatchDigest:      result.PatchDigest,
+			Type:               EventArtifactInputCompleted,
+			ChangedTestPaths:   result.ChangedTestPaths,
+			PatchDigest:        result.PatchDigest,
+			TestArtifactDigest: result.TestArtifactDigest,
 		}, true)
 
 	case StageFocusedTest:
@@ -171,6 +225,16 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 		}
 		return c.record(ctx, run, Event{Type: EventPRCompleted, Succeeded: true, PRURL: prURL}, true)
 
+	case StagePublishPatch:
+		if c.Publisher == nil {
+			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "patch publisher is unconfigured"})
+		}
+		ref, err := c.Publisher.PublishPatch(ctx, c.work(run, "publish-patch", run.AttemptCount()))
+		if err != nil {
+			return c.fail(ctx, run, workerFailure(err))
+		}
+		return c.record(ctx, run, Event{Type: EventPatchPublished, Succeeded: true, ResultArtifactRef: ref}, true)
+
 	case StageDone:
 		return run, nil
 	default:
@@ -182,11 +246,11 @@ func (c *Coordinator) runMaven(ctx context.Context, run Run, phase MavenPhase, e
 	if c.Maven == nil {
 		return c.fail(ctx, run, &WorkerFailure{Diagnostic: "Maven profile runner is unconfigured"})
 	}
-	work := c.work(run, string(phase), 0)
-	if phase == MavenPhaseFocusedTests {
-		work.Attempt = run.AttemptCount()
-		work.ChangedTestPaths = append([]string(nil), run.ChangedTestPaths...)
+	attempt := 0
+	if phase != MavenPhasePackage {
+		attempt = run.AttemptCount()
 	}
+	work := c.work(run, string(phase), attempt)
 	result, err := c.Maven.RunMaven(ctx, MavenWorkRequest{WorkRequest: work, Phase: phase})
 	if err != nil {
 		return c.fail(ctx, run, workerFailure(err))
@@ -199,6 +263,12 @@ func (c *Coordinator) runMaven(ctx context.Context, run Run, phase MavenPhase, e
 }
 
 func (c *Coordinator) fail(ctx context.Context, run Run, failure *WorkerFailure) (Run, error) {
+	if err := ctx.Err(); err != nil {
+		return run, err
+	}
+	if errors.Is(failure, ErrWorkPending) || errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
+		return run, failure
+	}
 	diagnostic := "worker operation failed"
 	if failure != nil && strings.TrimSpace(failure.Diagnostic) != "" {
 		diagnostic = failure.Diagnostic
@@ -207,10 +277,18 @@ func (c *Coordinator) fail(ctx context.Context, run Run, failure *WorkerFailure)
 	if failure != nil && failure.OutcomeUnknown {
 		eventType = EventOutcomeUnknown
 	}
-	return c.record(ctx, run, Event{Type: eventType, Diagnostic: diagnostic}, false)
+	event := Event{Type: eventType, Diagnostic: diagnostic}
+	var retained interface{ RetainedEvidence() string }
+	if failure != nil && errors.As(failure, &retained) {
+		event.EvidenceRef = retained.RetainedEvidence()
+	}
+	return c.record(ctx, run, event, false)
 }
 
 func (c *Coordinator) record(ctx context.Context, run Run, event Event, workerResult bool) (Run, error) {
+	if err := ctx.Err(); err != nil {
+		return run, err
+	}
 	eventID, err := NewEventID()
 	if err != nil {
 		return Run{}, err
@@ -232,19 +310,35 @@ func (c *Coordinator) record(ctx context.Context, run Run, event Event, workerRe
 
 func (c *Coordinator) work(run Run, operation string, attempt int) WorkRequest {
 	key := digest([]byte(run.RunID)) + ":" + operation + ":" + fmt.Sprint(attempt)
-	return WorkRequest{
-		RunID:          run.RunID,
-		IdempotencyKey: key,
-		Request:        run.Request,
-		ResolvedCommit: run.ResolvedCommit,
-		Attempt:        attempt,
+	work := WorkRequest{
+		RunID:              run.RunID,
+		IdempotencyKey:     key,
+		Request:            run.Request,
+		ResolvedCommit:     run.ResolvedCommit,
+		Attempt:            attempt,
+		ChangedTestPaths:   append([]string(nil), run.ChangedTestPaths...),
+		PatchDigest:        run.PatchDigest,
+		TestArtifactDigest: run.TestArtifactDigest,
 	}
+	if run.Stage == StageFocusedTest {
+		if run.Candidate != nil {
+			work.ChangedTestPaths = append([]string(nil), run.Candidate.ChangedTestPaths...)
+			work.PatchDigest = run.Candidate.PatchDigest
+			work.TestArtifactDigest = run.Candidate.TestArtifactDigest
+		} else if len(run.Attempts) > 0 {
+			candidate := run.Attempts[len(run.Attempts)-1]
+			work.ChangedTestPaths = append([]string(nil), candidate.ChangedTestPaths...)
+			work.PatchDigest = candidate.PatchDigest
+			work.TestArtifactDigest = candidate.TestArtifactDigest
+		}
+	}
+	return work
 }
 
 func workerFailure(err error) *WorkerFailure {
 	var failure *WorkerFailure
 	if errors.As(err, &failure) {
-		return failure
+		return &WorkerFailure{Diagnostic: failure.Diagnostic, OutcomeUnknown: failure.OutcomeUnknown, Cause: err}
 	}
 	return &WorkerFailure{Diagnostic: "worker operation failed", Cause: err}
 }

@@ -4,6 +4,8 @@
 
 /contracts/ @testetson22
 /src/atg/ @testetson22
+/services/control/ @testetson22
+/workers/ @testetson22
 /scripts/ @testetson22
 /tests/ @testetson22
 /fixtures/ @testetson22

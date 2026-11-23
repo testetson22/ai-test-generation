@@ -12,11 +12,13 @@ make race
 until the deployment platform and target architecture are selected; the module
 does not depend on the Docker daemon to build or test.
 
-The executable exposes liveness and readiness plus fail-closed execution routes.
-Readiness remains blocked until durable state, artifact storage, an execution
-provider, and the execution API adapters are initialized. Supplying configuration
-strings does not make an unimplemented backend ready. No simulated backend is
-included in the production binary.
+The default executable exposes liveness and fail-closed production execution
+routes. Default-mode readiness remains blocked until its production dependencies
+are initialized; configuration strings alone do not make a backend ready.
+Explicit loopback-only development modes are separate: `offline-simulation`
+performs no external work, while `local-development` uses real PostgreSQL,
+development FileStore artifacts, and isolated local OCI workers. Local readiness
+does not claim production readiness or live generation.
 
 Run locally with `go run ./cmd/atg-control`. `GET /health/live` reports process
 liveness; `GET /health/ready` reports runtime dependency initialization and returns
@@ -65,3 +67,68 @@ proof; the initial migration remains unchanged. `execution-result.schema.json`
 describes operational
 evidence and does not claim test pass; no application-specific commands or worker
 platform are selected by these framework-neutral components.
+
+## Real Local Execution
+
+The opt-in `local-development` mode runs an **execution-only, artifact-input,
+patch-only** flow. It is not the Analyze/Plan/Code generator and does not create
+approvals, model results, pushes, or PRs. The independently buildable Java 17
+worker and fixed development profile live in `workers/java17-maven/`.
+
+Required settings are `ATG_DATABASE_URL`, `ATG_ARTIFACT_ROOT`,
+`ATG_LOCAL_PROFILE`, and `ATG_DEVELOPMENT_BEARER_TOKEN` (at least 24 characters).
+`ATG_LOCAL_ENGINE` defaults to `podman`; `ATG_LOCAL_IMAGE` defaults to
+`localhost/atg-java17-maven:local`. `ATG_LISTEN_ADDR` must contain a literal
+loopback IP. The current local adapter requires a rootless Linux Podman runtime
+with cgroup v2; macOS requires its Linux VM. Docker can build/run the same image
+recipe, but is not yet a supported control-service engine adapter.
+
+The service resolves the image once to an immutable **local image ID**, stores a
+profile/image binding artifact, and uses that artifact's digest for admission
+and dispatch. A tag change does not silently rebind a running service; restarting
+with a different image produces a different profile binding. This is not a
+published registry digest or production profile approval.
+Existing runs remain readable, but cancellation against an inactive profile
+returns `run_profile_not_active`; restart with the original profile/image binding
+to reconcile or cancel its in-flight work.
+
+The authenticated development endpoints are:
+
+- `POST /development/test-artifacts`: validate and retain a bounded JSON artifact
+  containing new Java test files and independently supplied expected test IDs.
+- `POST /development/test-generation-runs`: admit a run with
+  `input_artifact_digest` and an `Idempotency-Key`; source/profile are server-owned.
+- `GET /development/test-generation-runs/{runID}`: persisted status and result
+  references, including explicit execution-only mode.
+- `GET /development/test-generation-runs/{runID}/operations`: durable nonsecret
+  operation identities, states, and retained-result references.
+- `POST /development/test-generation-runs/{runID}/cancel`: revision-checked
+  cancellation with `expected_revision` and `Idempotency-Key`.
+- `GET /development/artifacts/{digest}`: bounded, digest-verified artifact bytes.
+
+`internal/localservice` drives only the configured artifact-input/patch-only
+runs, using fenced PostgreSQL claims and a write-ahead operation journal. Worker
+names derive from durable operation keys. Restart reconciles existing workers;
+missing workers after an ambiguous submission produce `outcome_unknown`, not an
+automatic replacement. A supplied artifact is never recorded as a model attempt.
+
+Each source/Maven operation has a fresh bounded tmpfs checkout/cache, nonroot
+UID, read-only root, dropped capabilities, CPU/memory/PID/file-size/deadline
+limits, and no model/SCM/database credentials or host/socket mounts. The explicit
+development network policy permits public egress; it is not an enforced
+allowlist. Maven resolves only through public Central with controlled settings.
+This is a development sandbox, not proof of adversarial-code containment.
+
+The controller retains a provisional result manifest before cleanup and a final
+manifest only after confirmed cleanup. Reports must contain the selected test
+IDs with positive counts and no missing, unexpected, failed, or skipped tests;
+exit zero alone is insufficient. Cancellation retains partial evidence and
+confirms termination before the cancelled event. State and artifacts must remain
+available across controller restarts; do not delete their persistent directories
+or run database-resetting tests against the service's database.
+
+See the [local run instructions](../../deploy/development-harness/README.md#standalone-local-execution)
+for build/start/validation commands. `scripts/validate_local_execution.py` is a
+key-free-with-respect-to-models, opt-in HTTP acceptance client, not a service
+dependency. Native unit tests remain model-free; PostgreSQL and OCI integration
+tests require their explicit test configuration.

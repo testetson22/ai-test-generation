@@ -97,17 +97,28 @@ func (s *Store) ApplyEvent(ctx context.Context, runID string, event testgenflow.
 	if s == nil || s.db == nil {
 		return testgenflow.Run{}, fmt.Errorf("test-generation run store is unavailable")
 	}
-	eventBytes, err := json.Marshal(event)
-	if err != nil {
-		return testgenflow.Run{}, fmt.Errorf("encode test-generation run event: %w", err)
-	}
-	eventDigest := testGenerationStateDigest(eventBytes)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return testgenflow.Run{}, fmt.Errorf("begin test-generation run transition: %w", err)
 	}
 	defer tx.Rollback()
 
+	next, err := applyTestGenerationEvent(ctx, tx, runID, event)
+	if err != nil {
+		return testgenflow.Run{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return testgenflow.Run{}, fmt.Errorf("commit test-generation run transition: %w", err)
+	}
+	return next, nil
+}
+
+func applyTestGenerationEvent(ctx context.Context, tx *sql.Tx, runID string, event testgenflow.Event) (testgenflow.Run, error) {
+	eventBytes, err := json.Marshal(event)
+	if err != nil {
+		return testgenflow.Run{}, fmt.Errorf("encode test-generation run event: %w", err)
+	}
+	eventDigest := testGenerationStateDigest(eventBytes)
 	run, err := scanTestGenerationRun(tx.QueryRowContext(ctx, testGenerationRunSelect+` WHERE run_id = $1 FOR UPDATE`, runID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return testgenflow.Run{}, testgenflow.ErrRunNotFound
@@ -120,9 +131,6 @@ func (s *Store) ApplyEvent(ctx context.Context, runID string, event testgenflow.
 	if err == nil {
 		if priorDigest != eventDigest {
 			return testgenflow.Run{}, testgenflow.ErrEventConflict
-		}
-		if err := tx.Commit(); err != nil {
-			return testgenflow.Run{}, fmt.Errorf("commit duplicate test-generation run event: %w", err)
 		}
 		return run, nil
 	}
@@ -169,9 +177,6 @@ func (s *Store) ApplyEvent(ctx context.Context, runID string, event testgenflow.
 		runID, event.ID, event.ExpectedRevision, next.Revision, string(event.Type), eventDigest, eventBytes, event.OccurredAt.UTC(),
 	); err != nil {
 		return testgenflow.Run{}, fmt.Errorf("append test-generation run event: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return testgenflow.Run{}, fmt.Errorf("commit test-generation run transition: %w", err)
 	}
 	return next, nil
 }

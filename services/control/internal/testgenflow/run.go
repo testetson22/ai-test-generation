@@ -9,12 +9,18 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 )
 
 const DefaultMaxGenerationAttempts = 6
+
+const (
+	InputModeArtifactInput  = "artifact_input"
+	CompletionModePatchOnly = "patch_only"
+)
 
 var (
 	ErrInvalidRequest      = errors.New("invalid test-generation development request")
@@ -50,14 +56,16 @@ const (
 type Stage string
 
 const (
-	StageSource       Stage = "source"
-	StageVerifyCommit Stage = "verify_commit"
-	StageBaseline     Stage = "baseline_package"
-	StageGenerate     Stage = "generate_tests"
-	StageFocusedTest  Stage = "focused_test"
-	StageFinalVerify  Stage = "final_verify"
-	StageOpenPR       Stage = "open_pr"
-	StageDone         Stage = "done"
+	StageSource        Stage = "source"
+	StageVerifyCommit  Stage = "verify_commit"
+	StageBaseline      Stage = "baseline_package"
+	StageGenerate      Stage = "generate_tests"
+	StageArtifactInput Stage = "artifact_input"
+	StageFocusedTest   Stage = "focused_test"
+	StageFinalVerify   Stage = "final_verify"
+	StageOpenPR        Stage = "open_pr"
+	StagePublishPatch  Stage = "publish_patch"
+	StageDone          Stage = "done"
 )
 
 type AttemptStatus string
@@ -73,30 +81,35 @@ const (
 type EventType string
 
 const (
-	EventSourceResolved       EventType = "source_resolved"
-	EventSignatureVerified    EventType = "signature_verified"
-	EventBaselineCompleted    EventType = "baseline_completed"
-	EventGenerationStarted    EventType = "generation_started"
-	EventGenerationCompleted  EventType = "generation_completed"
-	EventFocusedTestCompleted EventType = "focused_test_completed"
-	EventFinalVerifyCompleted EventType = "final_verify_completed"
-	EventPRCompleted          EventType = "pr_completed"
-	EventStageFailed          EventType = "stage_failed"
-	EventCancelRequested      EventType = "cancel_requested"
-	EventCancelled            EventType = "cancelled"
-	EventOutcomeUnknown       EventType = "outcome_unknown"
+	EventSourceResolved         EventType = "source_resolved"
+	EventSignatureVerified      EventType = "signature_verified"
+	EventBaselineCompleted      EventType = "baseline_completed"
+	EventGenerationStarted      EventType = "generation_started"
+	EventGenerationCompleted    EventType = "generation_completed"
+	EventArtifactInputCompleted EventType = "artifact_input_completed"
+	EventFocusedTestCompleted   EventType = "focused_test_completed"
+	EventFinalVerifyCompleted   EventType = "final_verify_completed"
+	EventPRCompleted            EventType = "pr_completed"
+	EventPatchPublished         EventType = "patch_published"
+	EventStageFailed            EventType = "stage_failed"
+	EventCancelRequested        EventType = "cancel_requested"
+	EventCancelled              EventType = "cancelled"
+	EventOutcomeUnknown         EventType = "outcome_unknown"
 )
 
 type Request struct {
-	RepositoryURL  string `json:"repository_url"`
-	Revision       string `json:"revision"`
-	BaseBranch     string `json:"base_branch"`
-	IssueIID       string `json:"issue_iid,omitempty"`
-	Subdirectory   string `json:"subdirectory"`
-	ProfileID      string `json:"profile_id"`
-	ProfileVersion string `json:"profile_version"`
-	ProfileDigest  string `json:"profile_digest"`
-	VerifyCommit   bool   `json:"verify_commit"`
+	RepositoryURL       string `json:"repository_url"`
+	Revision            string `json:"revision"`
+	BaseBranch          string `json:"base_branch"`
+	IssueIID            string `json:"issue_iid,omitempty"`
+	Subdirectory        string `json:"subdirectory"`
+	ProfileID           string `json:"profile_id"`
+	ProfileVersion      string `json:"profile_version"`
+	ProfileDigest       string `json:"profile_digest"`
+	VerifyCommit        bool   `json:"verify_commit"`
+	InputMode           string `json:"input_mode,omitempty"`
+	InputArtifactDigest string `json:"input_artifact_digest,omitempty"`
+	CompletionMode      string `json:"completion_mode,omitempty"`
 }
 
 type GenerationAttempt struct {
@@ -104,32 +117,44 @@ type GenerationAttempt struct {
 	Status                 AttemptStatus `json:"status"`
 	ChangedTestPaths       []string      `json:"changed_test_paths,omitempty"`
 	PatchDigest            string        `json:"patch_digest,omitempty"`
+	TestArtifactDigest     string        `json:"test_artifact_digest,omitempty"`
 	FocusedTestEvidenceRef string        `json:"focused_test_evidence_ref,omitempty"`
 	LastError              string        `json:"last_error,omitempty"`
 	StartedAt              time.Time     `json:"started_at"`
 	FinishedAt             *time.Time    `json:"finished_at,omitempty"`
 }
 
+type Candidate struct {
+	Status                 AttemptStatus `json:"status"`
+	ChangedTestPaths       []string      `json:"changed_test_paths"`
+	PatchDigest            string        `json:"patch_digest"`
+	TestArtifactDigest     string        `json:"test_artifact_digest"`
+	FocusedTestEvidenceRef string        `json:"focused_test_evidence_ref,omitempty"`
+}
+
 type Run struct {
-	RunID             string              `json:"run_id"`
-	IdempotencyKey    string              `json:"idempotency_key"`
-	RequestDigest     string              `json:"request_digest"`
-	Request           Request             `json:"request"`
-	Status            Status              `json:"status"`
-	Stage             Stage               `json:"stage"`
-	Revision          int64               `json:"revision"`
-	MaxAttempts       int                 `json:"max_attempts"`
-	ResolvedCommit    string              `json:"resolved_commit,omitempty"`
-	Attempts          []GenerationAttempt `json:"generation_attempts"`
-	TestsAdded        int                 `json:"tests_added"`
-	ChangedTestPaths  []string            `json:"changed_test_paths"`
-	PatchDigest       string              `json:"patch_digest,omitempty"`
-	PRURL             string              `json:"pr_url"`
-	EvidenceRef       string              `json:"evidence_ref,omitempty"`
-	LastError         string              `json:"last_error,omitempty"`
-	CreatedAt         time.Time           `json:"created_at"`
-	UpdatedAt         time.Time           `json:"updated_at"`
-	CancelRequestedAt *time.Time          `json:"cancel_requested_at,omitempty"`
+	RunID              string              `json:"run_id"`
+	IdempotencyKey     string              `json:"idempotency_key"`
+	RequestDigest      string              `json:"request_digest"`
+	Request            Request             `json:"request"`
+	Status             Status              `json:"status"`
+	Stage              Stage               `json:"stage"`
+	Revision           int64               `json:"revision"`
+	MaxAttempts        int                 `json:"max_attempts"`
+	ResolvedCommit     string              `json:"resolved_commit,omitempty"`
+	Attempts           []GenerationAttempt `json:"generation_attempts"`
+	TestsAdded         int                 `json:"tests_added"`
+	ChangedTestPaths   []string            `json:"changed_test_paths"`
+	PatchDigest        string              `json:"patch_digest,omitempty"`
+	Candidate          *Candidate          `json:"candidate,omitempty"`
+	TestArtifactDigest string              `json:"test_artifact_digest,omitempty"`
+	ResultArtifactRef  string              `json:"result_artifact_ref,omitempty"`
+	PRURL              string              `json:"pr_url"`
+	EvidenceRef        string              `json:"evidence_ref,omitempty"`
+	LastError          string              `json:"last_error,omitempty"`
+	CreatedAt          time.Time           `json:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at"`
+	CancelRequestedAt  *time.Time          `json:"cancel_requested_at,omitempty"`
 }
 
 type Event struct {
@@ -141,6 +166,8 @@ type Event struct {
 	Succeeded            bool      `json:"succeeded,omitempty"`
 	ChangedTestPaths     []string  `json:"changed_test_paths,omitempty"`
 	PatchDigest          string    `json:"patch_digest,omitempty"`
+	TestArtifactDigest   string    `json:"test_artifact_digest,omitempty"`
+	ResultArtifactRef    string    `json:"result_artifact_ref,omitempty"`
 	Diagnostic           string    `json:"diagnostic,omitempty"`
 	PRURL                string    `json:"pr_url,omitempty"`
 	EvidenceRef          string    `json:"evidence_ref,omitempty"`
@@ -207,6 +234,15 @@ func (r Request) Validate() error {
 	if !validFlowIdent(r.ProfileID) || !profileVersionPattern.MatchString(r.ProfileVersion) || !sha256Pattern.MatchString(r.ProfileDigest) {
 		return fmt.Errorf("%w: immutable execution-profile identity is required", ErrInvalidRequest)
 	}
+	if r.InputMode != "" && r.InputMode != InputModeArtifactInput {
+		return fmt.Errorf("%w: unsupported input mode", ErrInvalidRequest)
+	}
+	if r.InputMode == InputModeArtifactInput && !sha256Pattern.MatchString(r.InputArtifactDigest) || r.InputMode == "" && r.InputArtifactDigest != "" {
+		return fmt.Errorf("%w: artifact input requires a SHA256 content address and explicit mode", ErrInvalidRequest)
+	}
+	if r.CompletionMode != "" && r.CompletionMode != CompletionModePatchOnly {
+		return fmt.Errorf("%w: unsupported completion mode", ErrInvalidRequest)
+	}
 	return nil
 }
 
@@ -258,9 +294,13 @@ func (r Run) Apply(event Event) (Run, error) {
 		if !event.Succeeded {
 			return failedRun(r, event, "baseline Maven package failed")
 		}
-		next.Stage = StageGenerate
+		if r.Request.InputMode == InputModeArtifactInput {
+			next.Stage = StageArtifactInput
+		} else {
+			next.Stage = StageGenerate
+		}
 	case EventGenerationStarted:
-		if r.Status != StatusRunning || r.Stage != StageGenerate || len(r.Attempts) >= r.MaxAttempts {
+		if r.Status != StatusRunning || r.Stage != StageGenerate || r.Request.InputMode != "" || len(r.Attempts) >= r.MaxAttempts || len(r.Attempts) > 0 && r.Attempts[len(r.Attempts)-1].Status == AttemptRunning {
 			return Run{}, fmt.Errorf("%w: generation attempt is not authorized", ErrInvalidTransition)
 		}
 		next.Attempts = append(next.Attempts, GenerationAttempt{
@@ -281,7 +321,7 @@ func (r Run) Apply(event Event) (Run, error) {
 		finishedAt := event.OccurredAt.UTC()
 		attempt.FinishedAt = &finishedAt
 		if len(paths) == 0 {
-			if event.PatchDigest != "" {
+			if event.PatchDigest != "" || event.TestArtifactDigest != "" || r.Request.CompletionMode == CompletionModePatchOnly {
 				return Run{}, fmt.Errorf("%w: no-test generation cannot reference a patch", ErrInvalidEvent)
 			}
 			attempt.Status = AttemptNoTests
@@ -296,16 +336,35 @@ func (r Run) Apply(event Event) (Run, error) {
 		if !sha256Pattern.MatchString(event.PatchDigest) {
 			return Run{}, fmt.Errorf("%w: generated test patch digest is required", ErrInvalidEvent)
 		}
+		if event.TestArtifactDigest != "" && !sha256Pattern.MatchString(event.TestArtifactDigest) {
+			return Run{}, fmt.Errorf("%w: generated test artifact digest is invalid", ErrInvalidEvent)
+		}
 		attempt.Status = AttemptGenerated
 		attempt.PatchDigest = strings.ToLower(event.PatchDigest)
+		attempt.TestArtifactDigest = strings.ToLower(event.TestArtifactDigest)
+		next.Stage = StageFocusedTest
+	case EventArtifactInputCompleted:
+		if r.Status != StatusRunning || r.Stage != StageArtifactInput || r.Request.InputMode != InputModeArtifactInput || r.Candidate != nil {
+			return Run{}, fmt.Errorf("%w: artifact input is not expected at this stage", ErrInvalidTransition)
+		}
+		paths, err := validateTestPaths(event.ChangedTestPaths)
+		if err != nil {
+			return Run{}, err
+		}
+		if len(paths) == 0 || !sha256Pattern.MatchString(event.PatchDigest) || !sha256Pattern.MatchString(event.TestArtifactDigest) {
+			return Run{}, fmt.Errorf("%w: artifact input requires test paths, patch digest, and retrievable artifact digest", ErrInvalidEvent)
+		}
+		next.Candidate = &Candidate{
+			Status:             AttemptGenerated,
+			ChangedTestPaths:   paths,
+			PatchDigest:        strings.ToLower(event.PatchDigest),
+			TestArtifactDigest: strings.ToLower(event.TestArtifactDigest),
+		}
 		next.Stage = StageFocusedTest
 	case EventFocusedTestCompleted:
-		if r.Status != StatusRunning || r.Stage != StageFocusedTest || len(r.Attempts) == 0 || r.Attempts[len(r.Attempts)-1].Status != AttemptGenerated {
+		if r.Status != StatusRunning || r.Stage != StageFocusedTest {
 			return Run{}, fmt.Errorf("%w: focused test result has no generated candidate", ErrInvalidTransition)
 		}
-		attempt := &next.Attempts[len(next.Attempts)-1]
-		finishedAt := event.OccurredAt.UTC()
-		attempt.FinishedAt = &finishedAt
 		evidenceRef, err := boundedValue(event.EvidenceRef, 2048, "focused test evidence reference")
 		if err != nil {
 			return Run{}, err
@@ -314,11 +373,23 @@ func (r Run) Apply(event Event) (Run, error) {
 			if evidenceRef == "" {
 				return Run{}, fmt.Errorf("%w: successful focused tests require a report reference", ErrInvalidEvent)
 			}
-			attempt.Status = AttemptAccepted
-			attempt.FocusedTestEvidenceRef = evidenceRef
-			next.TestsAdded = len(attempt.ChangedTestPaths)
-			next.ChangedTestPaths = append([]string(nil), attempt.ChangedTestPaths...)
-			next.PatchDigest = attempt.PatchDigest
+			if next.Candidate != nil {
+				next.Candidate.Status = AttemptAccepted
+				next.Candidate.FocusedTestEvidenceRef = evidenceRef
+				next.ChangedTestPaths = append([]string(nil), next.Candidate.ChangedTestPaths...)
+				next.PatchDigest = next.Candidate.PatchDigest
+				next.TestArtifactDigest = next.Candidate.TestArtifactDigest
+			} else {
+				attempt := &next.Attempts[len(next.Attempts)-1]
+				finishedAt := event.OccurredAt.UTC()
+				attempt.FinishedAt = &finishedAt
+				attempt.Status = AttemptAccepted
+				attempt.FocusedTestEvidenceRef = evidenceRef
+				next.ChangedTestPaths = append([]string(nil), attempt.ChangedTestPaths...)
+				next.PatchDigest = attempt.PatchDigest
+				next.TestArtifactDigest = attempt.TestArtifactDigest
+			}
+			next.TestsAdded = len(next.ChangedTestPaths)
 			next.LastError = ""
 			next.Stage = StageFinalVerify
 			break
@@ -327,14 +398,23 @@ func (r Run) Apply(event Event) (Run, error) {
 		if err != nil {
 			return Run{}, err
 		}
-		attempt.Status = AttemptFailed
-		attempt.FocusedTestEvidenceRef = evidenceRef
-		attempt.LastError = diagnostic
 		next.LastError = diagnostic
-		if len(next.Attempts) >= next.MaxAttempts {
+		if next.Candidate != nil {
+			next.Candidate.Status = AttemptFailed
+			next.Candidate.FocusedTestEvidenceRef = evidenceRef
 			next.Status = StatusFailed
 		} else {
-			next.Stage = StageGenerate
+			attempt := &next.Attempts[len(next.Attempts)-1]
+			finishedAt := event.OccurredAt.UTC()
+			attempt.FinishedAt = &finishedAt
+			attempt.Status = AttemptFailed
+			attempt.FocusedTestEvidenceRef = evidenceRef
+			attempt.LastError = diagnostic
+			if len(next.Attempts) >= next.MaxAttempts {
+				next.Status = StatusFailed
+			} else {
+				next.Stage = StageGenerate
+			}
 		}
 	case EventFinalVerifyCompleted:
 		if r.Status != StatusRunning || r.Stage != StageFinalVerify || r.TestsAdded == 0 {
@@ -348,7 +428,25 @@ func (r Run) Apply(event Event) (Run, error) {
 			return Run{}, fmt.Errorf("%w: successful final verification requires a report reference", ErrInvalidEvent)
 		}
 		next.EvidenceRef = evidenceRef
-		next.Stage = StageOpenPR
+		if r.Request.CompletionMode == CompletionModePatchOnly {
+			next.Stage = StagePublishPatch
+		} else {
+			next.Stage = StageOpenPR
+		}
+	case EventPatchPublished:
+		if r.Status != StatusRunning || r.Stage != StagePublishPatch || r.Request.CompletionMode != CompletionModePatchOnly || r.TestsAdded == 0 {
+			return Run{}, fmt.Errorf("%w: patch publication is not expected at this stage", ErrInvalidTransition)
+		}
+		if !event.Succeeded {
+			return failedRun(r, event, "patch publication failed")
+		}
+		ref, err := boundedValue(event.ResultArtifactRef, 2048, "result artifact reference")
+		if err != nil || strings.TrimSpace(ref) == "" {
+			return Run{}, fmt.Errorf("%w: patch publication requires a durable result artifact reference", ErrInvalidEvent)
+		}
+		next.ResultArtifactRef = ref
+		next.Stage = StageDone
+		next.Status = StatusCompleted
 	case EventPRCompleted:
 		if r.Status != StatusRunning || r.Stage != StageOpenPR || r.TestsAdded == 0 {
 			return Run{}, fmt.Errorf("%w: PR result is not expected at this stage", ErrInvalidTransition)
@@ -379,6 +477,13 @@ func (r Run) Apply(event Event) (Run, error) {
 		if r.Status != StatusCancelRequested || !event.TerminationConfirmed {
 			return Run{}, fmt.Errorf("%w: cancellation requires a pending request and confirmed worker termination", ErrInvalidTransition)
 		}
+		if event.EvidenceRef != "" {
+			evidenceRef, err := boundedValue(event.EvidenceRef, 2048, "cancellation evidence reference")
+			if err != nil || strings.TrimSpace(evidenceRef) == "" {
+				return Run{}, fmt.Errorf("%w: cancellation evidence reference is invalid", ErrInvalidEvent)
+			}
+			next.EvidenceRef = evidenceRef
+		}
 		next.Status = StatusCancelled
 	case EventOutcomeUnknown:
 		if r.Status != StatusQueued && r.Status != StatusRunning && r.Status != StatusCancelRequested {
@@ -390,6 +495,13 @@ func (r Run) Apply(event Event) (Run, error) {
 		}
 		next.LastError = diagnostic
 		next.Status = StatusOutcomeUnknown
+		if event.EvidenceRef != "" {
+			ref, err := boundedValue(event.EvidenceRef, 2048, "unknown-outcome evidence reference")
+			if err != nil || strings.TrimSpace(ref) == "" {
+				return Run{}, fmt.Errorf("%w: unknown-outcome evidence reference is invalid", ErrInvalidEvent)
+			}
+			next.EvidenceRef = ref
+		}
 	default:
 		return Run{}, fmt.Errorf("%w: unsupported event type %q", ErrInvalidEvent, event.Type)
 	}
@@ -419,6 +531,32 @@ func (r Run) Validate() error {
 	if r.ResolvedCommit != "" && (!commitPattern.MatchString(r.ResolvedCommit) || !strings.EqualFold(r.ResolvedCommit, r.Request.Revision)) {
 		return fmt.Errorf("%w: resolved commit differs from immutable request revision", ErrInvalidRun)
 	}
+	if r.Request.InputMode == InputModeArtifactInput {
+		if len(r.Attempts) != 0 || r.Stage == StageGenerate {
+			return fmt.Errorf("%w: artifact input cannot create generation attempts", ErrInvalidRun)
+		}
+		if r.Status == StatusCompleted && r.TestsAdded == 0 {
+			return fmt.Errorf("%w: artifact input cannot complete without accepted tests", ErrInvalidRun)
+		}
+	} else if r.Candidate != nil || r.Stage == StageArtifactInput {
+		return fmt.Errorf("%w: artifact candidate requires explicit artifact input mode", ErrInvalidRun)
+	}
+	if r.Candidate != nil {
+		candidate := r.Candidate
+		paths, err := validateTestPaths(candidate.ChangedTestPaths)
+		if err != nil || len(paths) == 0 || !sha256Pattern.MatchString(candidate.PatchDigest) || !sha256Pattern.MatchString(candidate.TestArtifactDigest) {
+			return fmt.Errorf("%w: artifact candidate must bind paths, patch, and artifact", ErrInvalidRun)
+		}
+		if candidate.Status != AttemptGenerated && candidate.Status != AttemptAccepted && candidate.Status != AttemptFailed {
+			return fmt.Errorf("%w: artifact candidate status is invalid", ErrInvalidRun)
+		}
+		if _, err := boundedValue(candidate.FocusedTestEvidenceRef, 2048, "focused test evidence reference"); err != nil || candidate.Status == AttemptAccepted && strings.TrimSpace(candidate.FocusedTestEvidenceRef) == "" {
+			return fmt.Errorf("%w: accepted artifact candidate requires focused test evidence", ErrInvalidRun)
+		}
+		if r.Stage == StageSource || r.Stage == StageVerifyCommit || r.Stage == StageBaseline || r.Stage == StageArtifactInput {
+			return fmt.Errorf("%w: artifact candidate precedes artifact preparation", ErrInvalidRun)
+		}
+	}
 	for i, attempt := range r.Attempts {
 		if attempt.Number != i+1 || !validAttemptStatus(attempt.Status) || attempt.StartedAt.IsZero() || attempt.StartedAt.Before(r.CreatedAt) {
 			return fmt.Errorf("%w: generation attempt identity or timestamps are invalid", ErrInvalidRun)
@@ -437,6 +575,9 @@ func (r Run) Validate() error {
 		if len(attempt.LastError) > 1024 {
 			return fmt.Errorf("%w: generation error exceeds limit", ErrInvalidRun)
 		}
+		if attempt.TestArtifactDigest != "" && (!sha256Pattern.MatchString(attempt.TestArtifactDigest) || len(attempt.ChangedTestPaths) == 0) {
+			return fmt.Errorf("%w: generation attempt artifact digest is invalid", ErrInvalidRun)
+		}
 		if _, err := boundedValue(attempt.FocusedTestEvidenceRef, 2048, "focused test evidence reference"); err != nil {
 			return fmt.Errorf("%w: focused test evidence reference is invalid", ErrInvalidRun)
 		}
@@ -454,11 +595,51 @@ func (r Run) Validate() error {
 	if r.TestsAdded > 0 && !sha256Pattern.MatchString(r.PatchDigest) {
 		return fmt.Errorf("%w: accepted patch digest is invalid", ErrInvalidRun)
 	}
-	if r.TestsAdded > 0 && (r.Stage == StageOpenPR || r.Status == StatusCompleted) && r.EvidenceRef == "" {
+	if r.TestsAdded > 0 {
+		var accepted Candidate
+		if r.Candidate != nil {
+			accepted = *r.Candidate
+		} else if len(r.Attempts) > 0 {
+			attempt := r.Attempts[len(r.Attempts)-1]
+			accepted = Candidate{Status: attempt.Status, ChangedTestPaths: attempt.ChangedTestPaths, PatchDigest: attempt.PatchDigest, TestArtifactDigest: attempt.TestArtifactDigest}
+		}
+		if accepted.Status != AttemptAccepted || !slices.Equal(paths, accepted.ChangedTestPaths) || r.PatchDigest != accepted.PatchDigest || r.TestArtifactDigest != accepted.TestArtifactDigest {
+			return fmt.Errorf("%w: accepted paths, patch, and artifact differ from the focused candidate", ErrInvalidRun)
+		}
+	}
+	if r.Stage == StageFocusedTest && (r.Status == StatusRunning || r.Status == StatusCancelRequested) {
+		if r.Candidate != nil {
+			if r.Candidate.Status != AttemptGenerated {
+				return fmt.Errorf("%w: focused tests require a pending artifact candidate", ErrInvalidRun)
+			}
+		} else if len(r.Attempts) == 0 || r.Attempts[len(r.Attempts)-1].Status != AttemptGenerated {
+			return fmt.Errorf("%w: focused tests require a pending generation candidate", ErrInvalidRun)
+		}
+	}
+	if (r.Stage == StageFinalVerify || r.Stage == StageOpenPR || r.Stage == StagePublishPatch) && r.TestsAdded == 0 {
+		return fmt.Errorf("%w: verification and publication require accepted tests", ErrInvalidRun)
+	}
+	if r.TestsAdded > 0 && (r.Stage == StageOpenPR || r.Stage == StagePublishPatch || r.Status == StatusCompleted) && strings.TrimSpace(r.EvidenceRef) == "" {
 		return fmt.Errorf("%w: verified tests require a durable report reference before PR or completion", ErrInvalidRun)
 	}
-	if r.TestsAdded == 0 && (len(paths) != 0 || r.PatchDigest != "" || r.PRURL != "") {
+	if r.TestsAdded == 0 && (len(paths) != 0 || r.PatchDigest != "" || r.TestArtifactDigest != "" || r.PRURL != "" || r.ResultArtifactRef != "") {
 		return fmt.Errorf("%w: zero-test result cannot reference a patch or PR", ErrInvalidRun)
+	}
+	if r.TestArtifactDigest != "" && !sha256Pattern.MatchString(r.TestArtifactDigest) {
+		return fmt.Errorf("%w: accepted artifact digest is invalid", ErrInvalidRun)
+	}
+	if r.Request.CompletionMode == CompletionModePatchOnly {
+		if r.PRURL != "" || r.Stage == StageOpenPR || r.Status == StatusCompleted && strings.TrimSpace(r.ResultArtifactRef) == "" {
+			return fmt.Errorf("%w: patch-only completion requires a result artifact and no SCM result", ErrInvalidRun)
+		}
+	} else if r.ResultArtifactRef != "" || r.Stage == StagePublishPatch {
+		return fmt.Errorf("%w: patch publication requires explicit patch-only mode", ErrInvalidRun)
+	}
+	if r.ResultArtifactRef != "" && (r.Status != StatusCompleted || r.Stage != StageDone) {
+		return fmt.Errorf("%w: result artifact can only be exposed after publication completes", ErrInvalidRun)
+	}
+	if _, err := boundedValue(r.ResultArtifactRef, 2048, "result artifact reference"); err != nil {
+		return err
 	}
 	if _, err := boundedURL(r.PRURL, "PR_URL"); err != nil {
 		return err
@@ -484,6 +665,11 @@ func (r Run) Validate() error {
 func (r Run) AttemptCount() int { return len(r.Attempts) }
 
 func cloneRun(r Run) Run {
+	if r.Candidate != nil {
+		candidate := *r.Candidate
+		candidate.ChangedTestPaths = append([]string(nil), candidate.ChangedTestPaths...)
+		r.Candidate = &candidate
+	}
 	if r.Attempts == nil {
 		r.Attempts = []GenerationAttempt{}
 	} else {
@@ -636,7 +822,7 @@ func validStatus(value Status) bool {
 
 func validStage(value Stage) bool {
 	switch value {
-	case StageSource, StageVerifyCommit, StageBaseline, StageGenerate, StageFocusedTest, StageFinalVerify, StageOpenPR, StageDone:
+	case StageSource, StageVerifyCommit, StageBaseline, StageGenerate, StageArtifactInput, StageFocusedTest, StageFinalVerify, StageOpenPR, StagePublishPatch, StageDone:
 		return true
 	default:
 		return false

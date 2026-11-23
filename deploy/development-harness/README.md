@@ -9,10 +9,114 @@ environment an integration prerequisite.
 The immediate goal is a development-only modularity proof against the existing
 demo flow, not the VPE-driven ATG MVP. VPE/VEX context is still in active
 development and is not a prerequisite for this demo. The current development
-composition is Go control plus Tekton-backed workers, with Tekton confined to the
-provider boundary and subject to FLPATH-5051 findings. Do not deploy it to the
-live cluster until the new demo is aligned with the original flow and the
-target environment is confirmed.
+integration target is Go control plus replaceable workers. The implemented first
+real slice is standalone local execution, described below; it does not require
+Tekton or the cluster. Eventual Tekton execution stays behind the provider
+boundary and subject to FLPATH-5051 findings. Do not deploy the replacement to
+the live cluster until the new demo is aligned and its environment is confirmed.
+
+## Standalone Local Execution
+
+The `local-development` service mode implements the first execution-only slice:
+real PostgreSQL admission/claims, pinned source checkout, a supplied test-only
+artifact, isolated Maven package/focused/verify operations, retained reports and
+patch-only completion. It does **not** implement live Analyze/Plan/Code or need
+the cluster. Supplying a test artifact is explicit, not a fake model result.
+
+Run commands from the repository root. Build the shared Java 17 worker locally:
+
+```bash
+podman build --pull=missing -t localhost/atg-java17-maven:local \
+  -f workers/java17-maven/Containerfile workers/java17-maven
+make -C services/control build
+```
+
+One recipe, dependency base and entrypoint serve local and eventual Tekton
+execution. There is no local-specific image variant. No login/push is necessary;
+`quay.io/rh-ee-tstetson` is only an available development destination if remote
+distribution is later needed. Public base-image pulls are not publishing.
+Only the rootless Linux Podman engine adapter is implemented at present; on
+macOS this uses its Linux VM. Readiness probes actual cgroup/UID/image behavior.
+
+Use an existing dedicated PostgreSQL 17 instance, or run the following in a
+separate foreground process with a persistent volume and matching locally chosen
+credentials. Do not reset a database used by a running service:
+
+```bash
+: "${ATG_LOCAL_DB_PASSWORD:?Set a local-only database password; a hex string avoids URL escaping}"
+podman run --name atg-local-development-postgres \
+  --memory=256m --cpus=0.5 --pids-limit=128 \
+  -p 127.0.0.1:55432:5432 \
+  -v atg-local-development-postgres-data:/var/lib/postgresql/data \
+  -e POSTGRES_USER=atg -e POSTGRES_DB=atg \
+  -e POSTGRES_PASSWORD="$ATG_LOCAL_DB_PASSWORD" postgres:17.6
+```
+
+Configure and launch the service, reusing the same database password:
+
+```bash
+export ATG_MODE=local-development
+export ATG_LISTEN_ADDR=127.0.0.1:18080
+export ATG_DATABASE_URL="postgres://atg:${ATG_LOCAL_DB_PASSWORD:?}@127.0.0.1:55432/atg?sslmode=disable"
+export ATG_ARTIFACT_ROOT="$PWD/.kilo/local-execution-artifacts"
+export ATG_LOCAL_PROFILE="$PWD/workers/java17-maven/profile.json"
+export ATG_LOCAL_ENGINE=podman
+export ATG_LOCAL_IMAGE=localhost/atg-java17-maven:local
+export ATG_DEVELOPMENT_BEARER_TOKEN="$(openssl rand -hex 24)"
+services/control/bin/atg-control
+```
+
+Use the same development bearer token in a separate validation process; do not
+put it in committed configuration. Readiness at `/health/ready` identifies
+`artifact_input`, `patch_only`, `live_generation:false`, and
+`production_ready:false`. Missing prerequisites fail closed. Default and
+`offline-simulation` modes retain their separate behavior; the production
+execution-pair routes remain unconfigured.
+
+The opt-in client uploads
+`local-spring-test-artifact.json`, a new test of the actual application's
+lowercase XML deposit behavior, and independently verifies retained patches,
+XML inventories and hashes over authenticated HTTP:
+
+```bash
+python3 scripts/validate_local_execution.py --output .kilo/local-validation.json
+python3 scripts/validate_local_execution.py --cancel-after-baseline-start \
+  --timeout-seconds 120 --output .kilo/local-cancellation.json
+```
+
+Each output path must be new. `--run-id <id>` verifies/observes an existing run
+without submitting another one; keep its original artifact/profile inputs.
+Missing, skipped, failed, unexpected or duplicate tests cannot count as success.
+The cancellation scenario requires partial evidence from a real active worker,
+not merely cancellation of an empty queue entry.
+
+The development profile fixes source
+`01a18a1b40e151ffcc1d7bef86bf335f87999750` and an independent 121-test baseline
+inventory. Each operation uses a fresh checkout and Maven cache, no credentials,
+a nonroot UID, read-only root, 3Gi memory/2 CPU/256 PID limits, a 1536MiB workspace
+tmpfs, 64MiB temporary tmpfs, 512MiB file-size limit, and bounded command/retention
+deadlines. It permits public egress and resolves dependencies through Central;
+it does not claim an enforced allowlist or the Artifactory integration. Image
+identity and the exact loaded profile are bound in a retained dispatch artifact.
+Local image IDs are not represented as published registry digests or production
+profile approvals. Further application profiles require explicit adapter/policy
+work, not caller-supplied commands or an automatic fallback to host Maven.
+
+The controller writes operation intent before dispatch, reconciles deterministic
+worker identities after restart, and refuses replacement when an acknowledged
+worker disappears. Cancellation retains partial evidence before recording
+confirmed termination. Patch publication durably records its provisional
+manifest before cleanup, so a restart after cleanup can finalize from retained
+data. A new image creates a different profile binding; existing in-flight runs
+require their original image/profile, not a silent toolchain change.
+
+Actual ARM64 validation on 2026-11-23 passed **121 baseline / 1 focused / 122 final**
+tests. The API/controller was killed during the baseline and restarted; the
+same OCI baseline worker completed, without a replacement. A second run was
+cancelled during Maven and retained partial evidence plus confirmed termination.
+The client verified 65 artifacts for the successful run. Local validation
+summaries remain under ignored `.kilo/`; these are not production-durable or
+published evidence. The earlier cluster probe below remains separate evidence.
 
 ## Current Playground
 
