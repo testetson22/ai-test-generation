@@ -25,8 +25,9 @@ by this layout.
 | `experiments/` | Provider, platform, and harness comparisons | No hidden production import or runtime dependency |
 | `deploy/<environment>/` | Deployment and environment composition | Wire explicit components/profiles; do not redefine lifecycle semantics or bake environment settings into service code |
 
-`services/` and `workers/` are reserved conventions, not currently implemented
-directories. Add concrete modules when implementing them, not placeholder trees.
+`services/` and `workers/` are component conventions. Concrete modules now include
+the Go control service, the independent bounded generation worker, and their
+workload recipes. Add further modules only with implementation, not placeholder trees.
 Reusable worker executable code belongs in an implementation module; workload
 profiles and image recipes reference it rather than copying its source.
 
@@ -36,6 +37,24 @@ Shared libraries require an explicit package/build boundary; common repository
 location does not make private implementation code a supported interface.
 Provider SDKs and harness types stay inside their adapters. Consumers pin/bundle
 the supported contract assets and preserve shared digest and replay semantics.
+
+Current component build inputs and validation:
+
+| Component | Native boundary | Verification state |
+|---|---|---|
+| `services/control/` | Own `go.mod`, native tests, build/package Makefile; public worker/profile fixtures are explicit test inputs | Artifact-input local flow has real PostgreSQL/OCI evidence; new model-generation flow has offline fixture coverage only |
+| `services/generation-worker/` | Own `pyproject.toml`, stdlib core/tests, separately pinned optional harness extras; no imports from reference or experiments | Pydantic adapter and common task protocol are offline-tested; live SDK integration and Aider controls are unverified |
+| `workers/java17-maven/` | One image recipe, entrypoint and development workload profile | Local native ARM64 execution measured; not production profile approval |
+| `workers/generation/` | One harness-parameterized image recipe referencing the generation module; strict root build-context allowlist | Base digest selection, dependency resolution and image build remain explicit external-operation gates |
+
+From the repository root, SDK-free worker checks use
+`PYTHONPATH=services/generation-worker/src python3 -m unittest discover -s services/generation-worker/tests`.
+Its independently packageable core uses
+`python3 -m pip wheel --no-deps services/generation-worker`; that command can
+resolve build dependencies and was not run during the externally restricted
+implementation pass. Image builds and harness extras are separate from core
+tests. Native CI covers the core wheel without installing model SDKs or calling
+providers; it does not silently build/publish a generation image.
 
 ## Build Boundaries
 

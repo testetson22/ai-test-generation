@@ -22,6 +22,8 @@ real PostgreSQL admission/claims, pinned source checkout, a supplied test-only
 artifact, isolated Maven package/focused/verify operations, retained reports and
 patch-only completion. It does **not** implement live Analyze/Plan/Code or need
 the cluster. Supplying a test artifact is explicit, not a fake model result.
+Opt-in staged generation is separately offline-validated; see
+[generation verification gates](#generation-verification-gates).
 
 Run commands from the repository root. Build the shared Java 17 worker locally:
 
@@ -117,6 +119,72 @@ cancelled during Maven and retained partial evidence plus confirmed termination.
 The client verified 65 artifacts for the successful run. Local validation
 summaries remain under ignored `.kilo/`; these are not production-durable or
 published evidence. The earlier cluster probe below remains separate evidence.
+
+## Generation Verification Gates
+
+The next slices add Go-owned Analyze/Plan/Code operations, Plan/Code checkpoints,
+and a replaceable bounded worker protocol. This is code and offline fixture
+coverage, **not a completed live generation validation**. No new running service,
+migration, SDK environment or generation image was activated.
+
+Model mode requires both `ATG_LOCAL_INPUT_MODE=model_generation` and
+`ATG_ALLOW_MODEL_CALLS=true`, plus a policy, prebuilt local image, private key
+file and reviewer attribution. Defaults remain artifact-input with no model
+calls. `workers/generation/` examples contain invalid placeholder endpoints and
+must not be mistaken for working configuration. Full settings are documented in
+the [control module](../../services/control/README.md#staged-generation-gate).
+
+With permitted dependencies configured, create accepts an objective:
+
+```json
+{"objective":"Add a focused regression test for the specified repository behavior."}
+```
+
+The server owns source/profile, model/harness selection, context and budgets.
+GET status exposes `waiting_review` checkpoints after Plan and Code. An
+authenticated review at `/development/test-generation-runs/{runID}/reviews`
+supplies the exact observed revision and artifact, for example:
+
+```json
+{
+  "expected_revision": 5,
+  "decision_id": "unique-human-decision-id",
+  "checkpoint_id": "<checkpoint id from status>",
+  "stage": "plan",
+  "artifact_ref": "<exact checkpoint artifact digest>",
+  "action": "approve",
+  "rationale": "Reviewed the source evidence and proposed test behavior."
+}
+```
+
+The revision is illustrative, not a fixed sequence. Reviewer identity, role and
+authorization reference are configured server-side. Code approval additionally
+supplies independently confirmed `expected_test_ids`; neither suggested IDs nor
+a model's approval claim authorizes execution. No SCM publication is enabled.
+
+One generation recipe serves both platforms, not local/Tekton variants. Its
+Python base has no default: a verified digest must be explicitly selected. The
+root build context includes only module/entrypoint inputs. No dependency lock,
+SDK compatibility, usable image, or live reliability has been fabricated.
+Pydantic is prepared for a separately permitted probe; Aider stays blocked until
+its request/token and shell/tool controls can be verified.
+
+Next **separately permitted** checks:
+
+1. Select the Python base digest, resolve/lock dependencies, and build the shared
+   generation image locally. Publishing is unnecessary.
+2. Apply/test the review migration against real PostgreSQL and probe the real
+   OCI worker. Existing database/engine integrations were not invoked here.
+3. Configure real noncommitted credentials, endpoint/model budgets and reviewer
+   authorization, then explicitly enable model mode.
+4. Run one bounded Pydantic workflow through both human checkpoints and real
+   Maven, retaining usage, source/model/worker identities, XML and recovery data.
+5. Investigate Aider's unsupported controls before enabling its live backend,
+   then repeat the service-level scenario without changing lifecycle code.
+
+Until permitted, image/SDK operations, database changes, model calls, source
+checkouts and remote writes are stopped. Offline races, in-memory reviews,
+schemas and SDK-free tests validate interfaces and gating, not provider quality.
 
 ## Current Playground
 

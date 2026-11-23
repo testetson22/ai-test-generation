@@ -16,18 +16,23 @@ import (
 const maxTestGenerationDevelopmentRequestBytes = 16 * 1024
 
 type TestGenerationDevelopmentConfig struct {
-	BearerToken       string
-	RepositoryURL     string
-	PinnedRevision    string
-	DefaultBaseBranch string
-	Subdirectory      string
-	ProfileID         string
-	ProfileVersion    string
-	ProfileDigest     string
-	MaxAttempts       int
-	InputMode         string
-	CompletionMode    string
-	Now               func() time.Time
+	BearerToken            string
+	RepositoryURL          string
+	PinnedRevision         string
+	DefaultBaseBranch      string
+	Subdirectory           string
+	ProfileID              string
+	ProfileVersion         string
+	ProfileDigest          string
+	MaxAttempts            int
+	InputMode              string
+	CompletionMode         string
+	GenerationPolicyDigest string
+	GenerationContextPaths []string
+	ReviewerID             string
+	ReviewerRole           string
+	ReviewAuthorizationRef string
+	Now                    func() time.Time
 }
 
 type TestGenerationDevelopmentAPI struct {
@@ -37,6 +42,7 @@ type TestGenerationDevelopmentAPI struct {
 	ValidateTestArtifact func([]byte) error
 	MaxTestArtifactBytes int64
 	Operations           func(context.Context, string) ([]testgenflow.Operation, error)
+	ApproveGeneratedCode func(context.Context, string, []string) (string, error)
 }
 
 type StartTestGenerationDevelopmentRequest struct {
@@ -45,6 +51,7 @@ type StartTestGenerationDevelopmentRequest struct {
 	Subdirectory        string `json:"subdirectory,omitempty"`
 	VerifyCommit        bool   `json:"verify_commit,omitempty"`
 	InputArtifactDigest string `json:"input_artifact_digest,omitempty"`
+	Objective           string `json:"objective,omitempty"`
 }
 
 type TestGenerationDevelopmentResponse struct {
@@ -110,6 +117,9 @@ func (a *TestGenerationDevelopmentAPI) Register(mux *http.ServeMux) {
 		if a.Operations != nil {
 			mux.HandleFunc("GET /development/test-generation-runs/{runID}/operations", a.getOperations)
 		}
+		if a.Config.InputMode == testgenflow.InputModeModelGeneration && a.ApproveGeneratedCode != nil {
+			mux.HandleFunc("POST /development/test-generation-runs/{runID}/reviews", a.reviewGeneration)
+		}
 	}
 }
 
@@ -133,6 +143,12 @@ func (a *TestGenerationDevelopmentAPI) Ready() bool {
 			return false
 		}
 		request.InputArtifactDigest = "sha256:" + strings.Repeat("0", 64)
+	}
+	if a.Config.InputMode == testgenflow.InputModeModelGeneration {
+		if a.Artifacts == nil || a.ValidateTestArtifact == nil || a.ApproveGeneratedCode == nil || !ValidDevelopmentReviewer(a.Config) {
+			return false
+		}
+		request.Generation = &testgenflow.GenerationRequest{Objective: "configuration probe", ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), PolicyDigest: a.Config.GenerationPolicyDigest}
 	}
 	return request.Validate() == nil
 }
@@ -181,6 +197,16 @@ func (a *TestGenerationDevelopmentAPI) createRun(w http.ResponseWriter, r *http.
 		InputMode:           a.Config.InputMode,
 		CompletionMode:      a.Config.CompletionMode,
 		InputArtifactDigest: input.InputArtifactDigest,
+	}
+	if a.Config.InputMode == testgenflow.InputModeModelGeneration {
+		if input.InputArtifactDigest != "" || input.VerifyCommit || baseBranch != a.Config.DefaultBaseBranch || subdirectory != a.Config.Subdirectory {
+			writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "unsupported_model_generation_options")
+			return
+		}
+		request.Generation = &testgenflow.GenerationRequest{Objective: input.Objective, ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), PolicyDigest: a.Config.GenerationPolicyDigest}
+	} else if input.Objective != "" {
+		writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "objective_requires_model_generation_mode")
+		return
 	}
 	if a.Config.InputMode == testgenflow.InputModeArtifactInput {
 		if input.VerifyCommit || baseBranch != a.Config.DefaultBaseBranch || subdirectory != a.Config.Subdirectory {

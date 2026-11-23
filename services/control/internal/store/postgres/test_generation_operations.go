@@ -23,6 +23,17 @@ var (
 )
 
 func (s *Store) ClaimNextTestGenerationRun(ctx context.Context, holder, profileDigest string, lease time.Duration) (*testgenflow.FlowClaim, error) {
+	return s.claimNextGenerationRun(ctx, holder, profileDigest, "", testgenflow.InputModeArtifactInput, lease)
+}
+
+func (s *Store) ClaimNextModelGenerationRun(ctx context.Context, holder, profileDigest, policyDigest string, lease time.Duration) (*testgenflow.FlowClaim, error) {
+	if !flowOperationDigestPattern.MatchString(profileDigest) || !flowOperationDigestPattern.MatchString(policyDigest) {
+		return nil, fmt.Errorf("model generation claims require immutable profile and policy digests")
+	}
+	return s.claimNextGenerationRun(ctx, holder, profileDigest, policyDigest, testgenflow.InputModeModelGeneration, lease)
+}
+
+func (s *Store) claimNextGenerationRun(ctx context.Context, holder, profileDigest, policyDigest, inputMode string, lease time.Duration) (*testgenflow.FlowClaim, error) {
 	if !flowOperationIDPattern.MatchString(holder) || lease < time.Microsecond || profileDigest != "" && !flowOperationDigestPattern.MatchString(profileDigest) {
 		return nil, fmt.Errorf("invalid test-generation claim holder, profile digest, or lease")
 	}
@@ -38,10 +49,11 @@ func (s *Store) ClaimNextTestGenerationRun(ctx context.Context, holder, profileD
 		WHERE status IN ('queued', 'running', 'cancel_requested')
 		  AND next_action_at <= clock_timestamp()
 		  AND (claim_lease_until IS NULL OR claim_lease_until <= clock_timestamp())
-		  AND convert_from(state_bytes, 'UTF8')::jsonb -> 'request' ->> 'input_mode' = 'artifact_input'
+		  AND convert_from(state_bytes, 'UTF8')::jsonb -> 'request' ->> 'input_mode' = $2
 		  AND ($1 = '' OR convert_from(state_bytes, 'UTF8')::jsonb -> 'request' ->> 'profile_digest' = $1)
+		  AND ($3 = '' OR convert_from(state_bytes, 'UTF8')::jsonb -> 'request' -> 'generation' ->> 'policy_digest' = $3)
 		ORDER BY next_action_at, created_at, run_id
-		LIMIT 1 FOR UPDATE SKIP LOCKED`, profileDigest))
+		LIMIT 1 FOR UPDATE SKIP LOCKED`, profileDigest, inputMode, policyDigest))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

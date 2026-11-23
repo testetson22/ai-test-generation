@@ -40,8 +40,9 @@ once the upstream ownership and format are confirmed.
 - `docs/`: architecture and lifecycle decisions.
 
 Keep the reference and production components in this repository for now. The
-`services/` and `workers/` paths are conventions, not existing implementations;
-create them only with concrete implementation work. Follow
+`services/` and `workers/` paths are component conventions; add modules only with
+concrete implementation work. Existing control/generation modules and workload
+recipes keep their own build and interface boundaries. Follow
 `docs/architecture/repository-layout.md` for component, build, and ownership rules.
 Preserve its future repository separation points: explicit versioned interfaces
 and dependency artifacts, clean-component builds, and no private sibling imports

@@ -27,6 +27,7 @@ material. They do not define the ATG architecture or authoritative Java target.
 - `experiments/README.md` - temporary harness and provider experiments.
 - `deploy/README.md` - development-harness and final-demo composition boundaries.
 - `deploy/development-harness/README.md` - standalone local execution, validation, and legacy demo reuse boundaries.
+- `services/generation-worker/` - bounded generation-stage module; SDK-free checks are available, live integration remains gated and unverified.
 
 ## Current Target
 

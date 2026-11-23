@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/agentworker"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/artifact"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/httpapi"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/localservice"
@@ -22,6 +23,13 @@ type localRuntime struct {
 }
 
 func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *slog.Logger) (*localRuntime, error) {
+	settings, err := loadGenerationSettings(getenv)
+	if err != nil {
+		return nil, err
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 	for _, key := range []string{"ATG_DATABASE_URL", "ATG_ARTIFACT_ROOT", "ATG_LOCAL_PROFILE", "ATG_DEVELOPMENT_BEARER_TOKEN"} {
 		if strings.TrimSpace(getenv(key)) == "" {
 			return nil, fmt.Errorf("local-development requires %s", key)
@@ -35,6 +43,16 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 	if err != nil {
 		return nil, fmt.Errorf("load local development profile: %w", err)
 	}
+	var generationPolicy agentworker.Policy
+	if settings.enabled {
+		generationPolicy, err = agentworker.LoadPolicy(settings.policyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load generation policy: %w", err)
+		}
+		if strings.Contains(generationPolicy.Model.Endpoint, ".invalid") {
+			return nil, errors.New("replace the example model endpoint before enabling external operations")
+		}
+	}
 	files, err := artifact.NewFileStore(getenv("ATG_ARTIFACT_ROOT"), httpapi.MaxDevelopmentArtifactBytes)
 	if err != nil {
 		return nil, fmt.Errorf("open local development artifacts: %w", err)
@@ -47,6 +65,29 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 		files.Close()
 		return nil, fmt.Errorf("local OCI worker is unavailable (build the shared worker image first): %w", err)
 	}
+	var generation localservice.GenerationWorker
+	apiConfig := httpapi.TestGenerationDevelopmentConfig{
+		BearerToken: token, RepositoryURL: profile.RepositoryURL, PinnedRevision: profile.Commit,
+		DefaultBaseBranch: "main", Subdirectory: profile.Subdirectory, ProfileID: profile.ID,
+		ProfileVersion: profile.Version, ProfileDigest: worker.ProfileDigest(), MaxAttempts: settings.attempts,
+		InputMode: settings.mode, CompletionMode: testgenflow.CompletionModePatchOnly,
+	}
+	if settings.enabled {
+		generator, err := agentworker.New(agentworker.Config{Engine: getenv("ATG_LOCAL_ENGINE"), Image: settings.image, Policy: generationPolicy, Artifacts: files, SourceEvidence: worker.RunEvidence, CredentialFile: settings.credentialFile, AllowModelCalls: true})
+		if err == nil {
+			err = generator.Ready(ctx)
+		}
+		if err != nil {
+			files.Close()
+			return nil, fmt.Errorf("generation worker is unavailable; external verification is required: %w", err)
+		}
+		generation = generator
+		apiConfig.GenerationPolicyDigest = generator.PolicyDigest()
+		apiConfig.GenerationContextPaths = append([]string(nil), generationPolicy.ContextPaths...)
+		apiConfig.ReviewerID = settings.reviewer.ReviewerID
+		apiConfig.ReviewerRole = settings.reviewer.ReviewerRole
+		apiConfig.ReviewAuthorizationRef = settings.reviewer.ReviewAuthorizationRef
+	}
 	store, err := postgres.Open(ctx, getenv("ATG_DATABASE_URL"))
 	if err != nil {
 		files.Close()
@@ -56,12 +97,7 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 		Repository: store, Worker: worker, Artifacts: files, Logger: logger,
 		MaxTestArtifactBytes: localworker.MaxTestArtifactBytes,
 		ValidateTestArtifact: func(raw []byte) error { _, err := localworker.DecodeTestArtifact(raw); return err },
-		API: httpapi.TestGenerationDevelopmentConfig{
-			BearerToken: token, RepositoryURL: profile.RepositoryURL, PinnedRevision: profile.Commit,
-			DefaultBaseBranch: "main", Subdirectory: profile.Subdirectory, ProfileID: profile.ID,
-			ProfileVersion: profile.Version, ProfileDigest: worker.ProfileDigest(), MaxAttempts: 1,
-			InputMode: testgenflow.InputModeArtifactInput, CompletionMode: testgenflow.CompletionModePatchOnly,
-		},
+		API:                  apiConfig, Generation: generation, AllowModelCalls: settings.enabled, ReviewTTL: settings.reviewTTL,
 	})
 	if err != nil {
 		store.Close()
@@ -73,7 +109,7 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 		files.Close()
 		return nil, fmt.Errorf("local execution dependencies are not ready: %w", err)
 	}
-	logger.Info("local development execution configured", "profile_id", profile.ID, "profile_digest", worker.ProfileDigest(), "live_generation", false, "publication", "patch_only")
+	logger.Info("local development execution configured", "profile_id", profile.ID, "profile_digest", worker.ProfileDigest(), "live_generation", settings.enabled, "publication", "patch_only")
 	return &localRuntime{service: service, store: store, artifacts: files}, nil
 }
 

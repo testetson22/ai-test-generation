@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-lightpath.github.io/ai-test-generation/contracts/v1/generation-stage-result.schema.json",
+  "title": "ATG generation stage result v1",
+  "description": "Unreviewed generation only, never an execution result or approval. suggested_test_ids are non-authoritative and require explicit controller-owned review. Non-completed outcomes retain uncertainty and carry no usable output. Consumers must bind every identity to the original exact task bytes and validate citations against the supplied context.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "job_id", "run_id", "attempt", "phase", "request_digest", "source_commit", "profile_digest", "policy_digest", "harness", "model", "status", "output", "usage", "versions", "diagnostic"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "job_id": {"$ref": "common.schema.json#/$defs/id"},
+    "run_id": {"$ref": "common.schema.json#/$defs/id"},
+    "attempt": {"type": "integer", "minimum": 1, "maximum": 100},
+    "phase": {"enum": ["analyze", "plan", "code"]},
+    "request_digest": {"$ref": "common.schema.json#/$defs/payload_digest"},
+    "source_commit": {"$ref": "generation-stage-task.schema.json#/$defs/commit"},
+    "profile_digest": {"$ref": "common.schema.json#/$defs/payload_digest"},
+    "policy_digest": {"$ref": "common.schema.json#/$defs/payload_digest"},
+    "harness": {"enum": ["pydantic_ai", "aider"]},
+    "model": {"$ref": "generation-stage-task.schema.json#/$defs/model"},
+    "status": {"enum": ["completed", "blocked", "inconclusive", "failed"]},
+    "output": {"type": "object"},
+    "usage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_tokens", "output_tokens", "requests"],
+      "properties": {
+        "input_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "output_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "requests": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "versions": {"type": "object", "minProperties": 1, "maxProperties": 16, "propertyNames": {"type": "string", "minLength": 1, "maxLength": 64}, "additionalProperties": {"type": "string", "minLength": 1, "maxLength": 128}},
+    "diagnostic": {"type": "string", "maxLength": 2048}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "completed"}, "phase": {"const": "analyze"}}}, "then": {"properties": {"output": {"$ref": "#/$defs/analysis"}}}},
+    {"if": {"properties": {"status": {"const": "completed"}, "phase": {"const": "plan"}}}, "then": {"properties": {"output": {"$ref": "#/$defs/plan"}}}},
+    {"if": {"properties": {"status": {"const": "completed"}, "phase": {"const": "code"}}}, "then": {"properties": {"output": {"$ref": "#/$defs/code"}}}},
+    {"if": {"properties": {"status": {"enum": ["blocked", "inconclusive", "failed"]}}}, "then": {"properties": {"output": {"maxProperties": 0}}}}
+  ],
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "strings": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/text"}},
+    "citation": {
+      "type": "object", "additionalProperties": false, "required": ["path", "start_line", "end_line"],
+      "properties": {
+        "path": {"$ref": "generation-stage-task.schema.json#/$defs/path"},
+        "start_line": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        "end_line": {"type": "integer", "minimum": 1, "maximum": 1048576}
+      }
+    },
+    "analysis": {
+      "type": "object", "additionalProperties": false, "required": ["summary", "facts", "gaps", "limitations"],
+      "properties": {
+        "summary": {"$ref": "#/$defs/text"},
+        "facts": {"type": "array", "maxItems": 128, "items": {
+          "type": "object", "additionalProperties": false, "required": ["claim", "citations"],
+          "properties": {
+            "claim": {"$ref": "#/$defs/text"},
+            "citations": {"type": "array", "minItems": 1, "maxItems": 128, "items": {"$ref": "#/$defs/citation"}}
+          }
+        }},
+        "gaps": {"$ref": "#/$defs/strings"}, "limitations": {"$ref": "#/$defs/strings"}
+      }
+    },
+    "plan": {
+      "type": "object", "additionalProperties": false, "required": ["summary", "scenarios", "limitations"],
+      "properties": {
+        "summary": {"$ref": "#/$defs/text"}, "limitations": {"$ref": "#/$defs/strings"},
+        "scenarios": {"type": "array", "minItems": 1, "maxItems": 128, "items": {
+          "type": "object", "additionalProperties": false, "required": ["name", "source_paths", "test_path", "behavior", "oracle"],
+          "properties": {
+            "name": {"$ref": "#/$defs/text"}, "behavior": {"$ref": "#/$defs/text"}, "oracle": {"$ref": "#/$defs/text"},
+            "source_paths": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"$ref": "generation-stage-task.schema.json#/$defs/path"}},
+            "test_path": {"$ref": "generation-stage-task.schema.json#/$defs/test_path"}
+          }
+        }}
+      }
+    },
+    "code": {
+      "type": "object", "additionalProperties": false, "required": ["summary", "files", "suggested_test_ids", "limitations"],
+      "properties": {
+        "summary": {"$ref": "#/$defs/text"}, "limitations": {"$ref": "#/$defs/strings"},
+        "suggested_test_ids": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z_$][A-Za-z0-9_.$]*#[A-Za-z_$][A-Za-z0-9_$]*$"}},
+        "files": {"type": "array", "minItems": 1, "maxItems": 32, "items": {
+          "type": "object", "additionalProperties": false, "required": ["path", "content"],
+          "properties": {
+            "path": {"$ref": "generation-stage-task.schema.json#/$defs/test_path"},
+            "content": {"type": "string", "minLength": 1, "maxLength": 131072, "allOf": [{"pattern": "\\S"}, {"pattern": "\\n$"}]}
+          }
+        }}
+      }
+    }
+  }
+}

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/project-lightpath/ai-test-generation/services/control/internal/agentworker"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/artifact"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/httpapi"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgenflow"
@@ -50,6 +51,9 @@ type Config struct {
 	PollInterval         time.Duration
 	LeaseDuration        time.Duration
 	Logger               *slog.Logger
+	Generation           GenerationWorker
+	AllowModelCalls      bool
+	ReviewTTL            time.Duration
 }
 
 type Service struct {
@@ -63,8 +67,31 @@ func New(config Config) (*Service, error) {
 	if config.Repository == nil || config.Worker == nil || config.Artifacts == nil || config.ValidateTestArtifact == nil {
 		return nil, errors.New("local execution requires PostgreSQL, artifact storage, an isolated worker, and artifact validation")
 	}
-	if config.API.InputMode != testgenflow.InputModeArtifactInput || config.API.CompletionMode != testgenflow.CompletionModePatchOnly {
-		return nil, errors.New("local execution requires explicit artifact_input and patch_only policies")
+	modelMode := config.API.InputMode == testgenflow.InputModeModelGeneration
+	if (!modelMode && config.API.InputMode != testgenflow.InputModeArtifactInput) || config.API.CompletionMode != testgenflow.CompletionModePatchOnly {
+		return nil, errors.New("local execution requires explicit artifact_input or model_generation and patch_only policies")
+	}
+	if modelMode {
+		if !config.AllowModelCalls {
+			return nil, agentworker.ErrExternalOperationsDisabled
+		}
+		if config.Generation == nil || config.Generation.PolicyDigest() != config.API.GenerationPolicyDigest {
+			return nil, errors.New("model mode requires a ready digest-bound generation worker")
+		}
+		if _, ok := config.Repository.(modelGenerationClaims); !ok {
+			return nil, errors.New("model mode requires policy-scoped durable claims")
+		}
+	} else if config.Generation != nil || config.AllowModelCalls {
+		return nil, errors.New("generation must not be configured for artifact-only mode")
+	}
+	if config.MaxTestArtifactBytes == 0 {
+		config.MaxTestArtifactBytes = 1 << 20
+	}
+	if config.ReviewTTL == 0 {
+		config.ReviewTTL = time.Hour
+	}
+	if config.ReviewTTL < time.Minute || config.ReviewTTL > 24*time.Hour {
+		return nil, errors.New("generation review TTL must be between one minute and one day")
 	}
 	if config.PollInterval == 0 {
 		config.PollInterval = 250 * time.Millisecond
@@ -83,6 +110,10 @@ func New(config Config) (*Service, error) {
 		ValidateTestArtifact: config.ValidateTestArtifact, MaxTestArtifactBytes: config.MaxTestArtifactBytes,
 		Operations: config.Repository.ListTestGenerationOperations,
 	}
+	service := &Service{config: config, api: api}
+	if modelMode {
+		api.ApproveGeneratedCode = service.approveGeneratedCode
+	}
 	if !api.Ready() {
 		return nil, errors.New("local execution API configuration is invalid")
 	}
@@ -90,7 +121,8 @@ func New(config Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Service{config: config, api: api, holder: holder}, nil
+	service.holder = holder
+	return service, nil
 }
 
 func (s *Service) Handler() http.Handler {
@@ -106,8 +138,8 @@ func (s *Service) Handler() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(code)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"status": state, "mode": "local-development", "input_mode": "artifact_input",
-			"completion_mode": "patch_only", "live_generation": false, "production_ready": false,
+			"status": state, "mode": "local-development", "input_mode": s.config.API.InputMode,
+			"completion_mode": "patch_only", "live_generation": s.config.API.InputMode == testgenflow.InputModeModelGeneration, "production_ready": false,
 		})
 	})
 	mux.Handle("/", httpapi.NewHandler(httpapi.Dependencies{}))
@@ -120,6 +152,14 @@ func (s *Service) Ready(ctx context.Context) error {
 	}
 	if err := s.config.Worker.Ready(ctx); err != nil {
 		return fmt.Errorf("local worker unavailable: %w", err)
+	}
+	if s.config.Generation != nil {
+		if !s.config.AllowModelCalls {
+			return agentworker.ErrExternalOperationsDisabled
+		}
+		if err := s.config.Generation.Ready(ctx); err != nil {
+			return fmt.Errorf("generation worker unavailable: %w", err)
+		}
 	}
 	canary := []byte("atg-local-development-artifact-readiness-v1\n")
 	ref, err := s.config.Artifacts.Put(ctx, canary)
@@ -165,7 +205,13 @@ func (s *Service) Run(ctx context.Context) error {
 }
 
 func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
-	claim, err := s.config.Repository.ClaimNextTestGenerationRun(ctx, s.holder, s.config.API.ProfileDigest, s.config.LeaseDuration)
+	var claim *testgenflow.FlowClaim
+	var err error
+	if s.config.API.InputMode == testgenflow.InputModeModelGeneration {
+		claim, err = s.config.Repository.(modelGenerationClaims).ClaimNextModelGenerationRun(ctx, s.holder, s.config.API.ProfileDigest, s.config.API.GenerationPolicyDigest, s.config.LeaseDuration)
+	} else {
+		claim, err = s.config.Repository.ClaimNextTestGenerationRun(ctx, s.holder, s.config.API.ProfileDigest, s.config.LeaseDuration)
+	}
 	if err != nil || claim == nil {
 		return false, err
 	}
@@ -178,7 +224,7 @@ func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
 	if err != nil {
 		return true, err
 	}
-	if run.Request.InputMode != testgenflow.InputModeArtifactInput || run.Request.CompletionMode != testgenflow.CompletionModePatchOnly {
+	if run.Request.InputMode != s.config.API.InputMode || run.Request.CompletionMode != testgenflow.CompletionModePatchOnly || (run.Request.InputMode == testgenflow.InputModeModelGeneration && (run.Request.Generation == nil || run.Request.Generation.PolicyDigest != s.config.API.GenerationPolicyDigest)) {
 		return true, errors.New("local driver refused a non-local run")
 	}
 	workCtx, cancel := context.WithCancel(ctx)
@@ -213,7 +259,10 @@ func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
 		coordinator := testgenflow.Coordinator{
 			Repository: &claimedRepository{Repository: s.config.Repository, claim: *claim},
 			Source:     workers, ArtifactInput: workers, Maven: workers, Publisher: workers,
-			Now: time.Now,
+			Now: s.now,
+		}
+		if s.config.Generation != nil {
+			coordinator.Generation = workers
 		}
 		_, err = coordinator.Advance(workCtx, run.RunID)
 	}

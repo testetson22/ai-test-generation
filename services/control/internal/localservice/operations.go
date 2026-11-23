@@ -88,7 +88,7 @@ func (o *operations) recordedFailure(ctx context.Context, kind, state, diagnosti
 		return &testgenflow.WorkerFailure{Diagnostic: "recorded worker failure evidence is unavailable", OutcomeUnknown: true, Cause: err}
 	}
 	if kind == "source" && state == "failed" {
-		if err := o.service.config.Worker.CleanupRun(ctx, o.claim.RunID); err != nil {
+		if err := o.service.cleanupWorkers(ctx, o.claim.RunID); err != nil {
 			failure = &testgenflow.WorkerFailure{Diagnostic: "source failure retained but cleanup is unconfirmed", OutcomeUnknown: true, Cause: err}
 		}
 	}
@@ -131,7 +131,20 @@ func (o *operations) RunMaven(ctx context.Context, work testgenflow.MavenWorkReq
 		return o.service.config.Worker.RunMaven(ctx, work)
 	}, &result)
 	if err == nil && !result.Succeeded {
-		if cleanupErr := o.service.config.Worker.CleanupRun(ctx, work.RunID); cleanupErr != nil {
+		run, readErr := o.service.config.Repository.GetRun(ctx, work.RunID)
+		if readErr != nil {
+			return result, fmt.Errorf("%w: cleanup eligibility unavailable", testgenflow.ErrWorkPending)
+		}
+		if run.Status == testgenflow.StatusCancelRequested {
+			return result, testgenflow.ErrWorkPending
+		}
+		if work.Request.InputMode == testgenflow.InputModeModelGeneration && work.Phase == testgenflow.MavenPhaseFocusedTests && work.Attempt < run.MaxAttempts {
+			// Source receipts remain the authority for the next attempt's context.
+			// Completed containers are sealed; run-wide cleanup belongs to the
+			// terminal/publishing path, not a retryable focused observation.
+			return result, nil
+		}
+		if cleanupErr := o.service.cleanupWorkers(ctx, work.RunID); cleanupErr != nil {
 			return result, &testgenflow.WorkerFailure{Diagnostic: "failed test evidence retained but cleanup is unconfirmed", OutcomeUnknown: true, Cause: cleanupErr}
 		}
 	}
@@ -155,8 +168,8 @@ func (o *operations) cancel(ctx context.Context, run testgenflow.Run) error {
 		if err != nil {
 			return nil, fmt.Errorf("%w: cancellation inventory unavailable", testgenflow.ErrWorkPending)
 		}
-		var prepared []string
-		external := 0
+		var prepared, modelPrepared []string
+		external, modelExternal := 0, 0
 		for _, op := range ops {
 			if op.Kind == "source" || strings.HasPrefix(op.Kind, "maven:") {
 				external++
@@ -164,8 +177,14 @@ func (o *operations) cancel(ctx context.Context, run testgenflow.Run) error {
 					prepared = append(prepared, op.Key)
 				}
 			}
+			if isGenerationOperation(op.Kind) {
+				modelExternal++
+				if op.State == "prepared" || op.State == "unknown" {
+					modelPrepared = append(modelPrepared, op.Key)
+				}
+			}
 		}
-		if external == 0 {
+		if external == 0 && modelExternal == 0 {
 			data, _ := json.Marshal(map[string]any{"schema_version": "local-cancellation/v1", "run_id": run.RunID, "termination_confirmed": true, "external_operations_dispatched": false})
 			ref, err := o.service.config.Artifacts.Put(ctx, data)
 			if err == nil {
@@ -176,30 +195,92 @@ func (o *operations) cancel(ctx context.Context, run testgenflow.Run) error {
 			}
 			return ref.Digest, err
 		}
-		if err := o.service.config.Worker.ConfirmOperations(ctx, run.RunID, prepared); err != nil {
-			return nil, err
-		}
-		ref, err := o.service.config.Worker.CancelRun(ctx, run.RunID)
-		if err == nil {
-			if _, err = o.service.config.Artifacts.Get(ctx, ref, httpapi.MaxDevelopmentArtifactBytes); err != nil {
-				return nil, fmt.Errorf("%w: cancellation manifest readback is unavailable", testgenflow.ErrWorkPending)
+		var refs []string
+		var problems []error
+		if external > 0 {
+			if err := o.service.config.Worker.ConfirmOperations(ctx, run.RunID, prepared); err != nil {
+				problems = append(problems, err)
+			} else {
+				ref, err := o.service.config.Worker.CancelRun(ctx, run.RunID)
+				if err != nil {
+					problems = append(problems, err)
+				} else {
+					refs = append(refs, ref)
+				}
 			}
 		}
-		return ref, err
+		if modelExternal > 0 {
+			if o.service.config.Generation == nil {
+				problems = append(problems, errors.New("submitted generation policy is unavailable"))
+			} else if err := o.service.config.Generation.ConfirmOperations(ctx, run.RunID, modelPrepared); err != nil {
+				problems = append(problems, err)
+			} else {
+				ref, err := o.service.config.Generation.CancelRun(ctx, run.RunID)
+				if err != nil {
+					problems = append(problems, err)
+				} else {
+					refs = append(refs, ref)
+				}
+			}
+		}
+		for _, ref := range refs {
+			raw, err := o.service.config.Artifacts.Get(ctx, ref, httpapi.MaxDevelopmentArtifactBytes)
+			if err != nil {
+				return nil, fmt.Errorf("%w: cancellation manifest readback is unavailable", testgenflow.ErrWorkPending)
+			}
+			var confirmed struct {
+				TerminationConfirmed bool `json:"termination_confirmed"`
+			}
+			if json.Unmarshal(raw, &confirmed) != nil || !confirmed.TerminationConfirmed {
+				problems = append(problems, errors.New("component cancellation lacks confirmed termination"))
+			}
+		}
+		if len(problems) > 0 {
+			failure := &testgenflow.WorkerFailure{Diagnostic: "cancellation could not be confirmed for all worker components", OutcomeUnknown: true, Cause: errors.Join(problems...)}
+			if len(refs) == 0 {
+				return nil, failure
+			}
+			data, _ := json.Marshal(map[string]any{"schema_version": "local-generation-cancellation/v1", "run_id": run.RunID, "termination_confirmed": false, "component_manifest_refs": refs})
+			ref, err := o.service.config.Artifacts.Put(ctx, data)
+			if err == nil {
+				_, err = o.service.config.Artifacts.Get(ctx, ref.Digest, httpapi.MaxDevelopmentArtifactBytes)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("%w: partial cancellation evidence unavailable", testgenflow.ErrWorkPending)
+			}
+			return nil, &retainedFailure{ref: ref.Digest, failure: failure}
+		}
+		if modelExternal == 0 {
+			return refs[0], nil
+		}
+		data, _ := json.Marshal(map[string]any{"schema_version": "local-generation-cancellation/v1", "run_id": run.RunID, "termination_confirmed": true, "component_manifest_refs": refs})
+		ref, err := o.service.config.Artifacts.Put(ctx, data)
+		if err == nil {
+			_, err = o.service.config.Artifacts.Get(ctx, ref.Digest, httpapi.MaxDevelopmentArtifactBytes)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%w: cancellation manifest retention is unavailable", testgenflow.ErrWorkPending)
+		}
+		return ref.Digest, nil
 	}, &evidence)
 	if err != nil {
 		var failure *testgenflow.WorkerFailure
 		if errors.As(err, &failure) {
 			hash := sha256.Sum256([]byte(key + "/unknown"))
-			_, saveErr := o.service.config.Repository.ApplyClaimedTestGenerationEvent(ctx, o.claim, testgenflow.Event{
+			event := testgenflow.Event{
 				ID: "cancel-unknown:" + hex.EncodeToString(hash[:]), ExpectedRevision: run.Revision,
 				Type: testgenflow.EventOutcomeUnknown, OccurredAt: time.Now().UTC(), Diagnostic: singleLine(failure.Diagnostic),
-			})
+			}
+			var retained interface{ RetainedEvidence() string }
+			if errors.As(err, &retained) {
+				event.EvidenceRef = retained.RetainedEvidence()
+			}
+			_, saveErr := o.service.config.Repository.ApplyClaimedTestGenerationEvent(ctx, o.claim, event)
 			return saveErr
 		}
 		return err
 	}
-	if err := o.service.config.Worker.CleanupRun(ctx, run.RunID); err != nil {
+	if err := o.service.cleanupWorkers(ctx, run.RunID); err != nil {
 		return err
 	}
 	hash := sha256.Sum256([]byte(key))
@@ -226,7 +307,7 @@ func (o *operations) publish(ctx context.Context, work testgenflow.WorkRequest) 
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return "", err
 	}
-	if err := o.service.config.Worker.CleanupRun(ctx, work.RunID); err != nil {
+	if err := o.service.cleanupWorkers(ctx, work.RunID); err != nil {
 		return "", &retainedFailure{ref: provisional, failure: &testgenflow.WorkerFailure{Diagnostic: "worker cleanup is unconfirmed; provisional evidence " + provisional, OutcomeUnknown: true, Cause: err}}
 	}
 	manifest["cleanup_confirmed"] = true
@@ -266,22 +347,46 @@ func (o *operations) retainResult(ctx context.Context, work testgenflow.WorkRequ
 		}
 		if strings.HasPrefix(op.Kind, "maven:") {
 			var result testgenflow.MavenResult
-			if json.Unmarshal(op.Result, &result) != nil || !result.Succeeded || result.EvidenceRef == "" {
+			if json.Unmarshal(op.Result, &result) != nil || result.EvidenceRef == "" {
 				return "", errors.New("Maven phase lacks successful retained evidence")
 			}
 			if _, err := o.service.config.Artifacts.Get(ctx, result.EvidenceRef, 32<<20); err != nil {
 				return "", err
 			}
+			phase := strings.TrimPrefix(op.Kind, "maven:")
+			attempt := work.Attempt
+			if phase == string(testgenflow.MavenPhasePackage) {
+				attempt = 0
+			}
+			selected := op.Key == testgenflow.WorkKey(work.RunID, phase, attempt)
+			if selected && !result.Succeeded {
+				return "", errors.New("selected Maven phase did not pass")
+			}
+			if !selected {
+				if op.Kind != "maven:focused_tests" || work.Request.InputMode != testgenflow.InputModeModelGeneration {
+					return "", errors.New("unexpected historical Maven operation")
+				}
+				retained = append(retained, op)
+				continue
+			}
+		}
+		if strings.HasPrefix(op.Kind, "generation:") && op.Key != testgenflow.WorkKey(work.RunID, "generate", work.Attempt)+":"+strings.TrimPrefix(op.Kind, "generation:") {
+			retained = append(retained, op)
+			continue
 		}
 		phases[op.Kind] = true
 		retained = append(retained, op)
 	}
-	for _, kind := range []string{"source", "artifact_input", "maven:package", "maven:focused_tests", "maven:verify"} {
+	required := []string{"source", "artifact_input", "maven:package", "maven:focused_tests", "maven:verify"}
+	if work.Request.InputMode == testgenflow.InputModeModelGeneration {
+		required = []string{"source", "maven:package", "generation:analyze", "generation:plan", "generation:code", "generation:materialize", "maven:focused_tests", "maven:verify"}
+	}
+	for _, kind := range required {
 		if !phases[kind] {
 			return "", fmt.Errorf("missing completed %s operation", kind)
 		}
 	}
-	evidence, err := o.service.config.Worker.RunEvidence(ctx, work.RunID)
+	evidence, err := o.service.workerEvidence(ctx, work.RunID)
 	if err != nil {
 		return "", err
 	}
@@ -291,18 +396,27 @@ func (o *operations) retainResult(ctx context.Context, work testgenflow.WorkRequ
 		}
 	}
 	manifest := struct {
-		SchemaVersion      string                  `json:"schema_version"`
-		Mode               string                  `json:"mode"`
-		RunID              string                  `json:"run_id"`
-		Request            testgenflow.Request     `json:"request"`
-		ResolvedCommit     string                  `json:"resolved_commit"`
-		TestArtifactDigest string                  `json:"test_artifact_digest"`
-		PatchDigest        string                  `json:"patch_digest"`
-		ChangedTestPaths   []string                `json:"changed_test_paths"`
-		Operations         []testgenflow.Operation `json:"operations"`
-		WorkerEvidence     []string                `json:"worker_evidence"`
-		CleanupConfirmed   bool                    `json:"cleanup_confirmed"`
-	}{"local-execution-result/v1", "artifact_input_patch_only", work.RunID, work.Request, work.ResolvedCommit, work.TestArtifactDigest, work.PatchDigest, work.ChangedTestPaths, retained, evidence, false}
+		SchemaVersion      string                         `json:"schema_version"`
+		Mode               string                         `json:"mode"`
+		RunID              string                         `json:"run_id"`
+		Request            testgenflow.Request            `json:"request"`
+		ResolvedCommit     string                         `json:"resolved_commit"`
+		TestArtifactDigest string                         `json:"test_artifact_digest"`
+		PatchDigest        string                         `json:"patch_digest"`
+		ChangedTestPaths   []string                       `json:"changed_test_paths"`
+		Operations         []testgenflow.Operation        `json:"operations"`
+		WorkerEvidence     []string                       `json:"worker_evidence"`
+		CleanupConfirmed   bool                           `json:"cleanup_confirmed"`
+		Reviews            []testgenflow.GenerationReview `json:"reviews,omitempty"`
+		AcceptedAttempt    int                            `json:"accepted_attempt,omitempty"`
+	}{"local-execution-result/v1", work.Request.InputMode + "_patch_only", work.RunID, work.Request, work.ResolvedCommit, work.TestArtifactDigest, work.PatchDigest, work.ChangedTestPaths, retained, evidence, false, nil, work.Attempt}
+	if work.Request.InputMode == testgenflow.InputModeModelGeneration {
+		run, err := o.service.config.Repository.GetRun(ctx, work.RunID)
+		if err != nil {
+			return "", err
+		}
+		manifest.Reviews = run.Reviews
+	}
 	put := func() (string, error) {
 		data, err := json.Marshal(manifest)
 		if err != nil {

@@ -52,6 +52,10 @@ func (a *TestGenerationDevelopmentAPI) cancelRun(w http.ResponseWriter, r *http.
 		writeTestGenerationDevelopmentError(w, http.StatusConflict, "run_profile_not_active")
 		return
 	}
+	if run.Request.InputMode != a.Config.InputMode || (run.Request.InputMode == testgenflow.InputModeModelGeneration && (run.Request.Generation == nil || run.Request.Generation.PolicyDigest != a.Config.GenerationPolicyDigest)) {
+		writeTestGenerationDevelopmentError(w, http.StatusConflict, "run_policy_not_active")
+		return
+	}
 	occurredAt := a.now().Truncate(time.Microsecond)
 	if run.CancelRequestedAt != nil {
 		occurredAt = *run.CancelRequestedAt

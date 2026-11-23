@@ -102,7 +102,11 @@ func (w *Worker) PrepareTestArtifact(ctx context.Context, r testgenflow.WorkRequ
 	if err := w.validateRequest(r); err != nil {
 		return testgenflow.GenerationResult{}, err
 	}
-	raw, err := w.get(ctx, r.Request.InputArtifactDigest, MaxTestArtifactBytes)
+	digest, err := candidateArtifactDigest(r)
+	if err != nil {
+		return testgenflow.GenerationResult{}, err
+	}
+	raw, err := w.get(ctx, digest, MaxTestArtifactBytes)
 	if err != nil {
 		return testgenflow.GenerationResult{}, err
 	}
@@ -134,7 +138,11 @@ func (w *Worker) admitted(ctx context.Context, r testgenflow.WorkRequest) (TestA
 	if err != nil {
 		return a, err
 	}
-	if artifact.Digest(a.PatchContent()) != r.PatchDigest || r.TestArtifactDigest != r.Request.InputArtifactDigest {
+	expected, err := candidateArtifactDigest(r)
+	if err != nil {
+		return a, err
+	}
+	if artifact.Digest(a.PatchContent()) != r.PatchDigest || r.TestArtifactDigest != expected {
 		return a, fmt.Errorf("candidate artifact or canonical patch digest mismatch")
 	}
 	paths := append([]string(nil), r.ChangedTestPaths...)
@@ -148,4 +156,20 @@ func (w *Worker) admitted(ctx context.Context, r testgenflow.WorkRequest) (TestA
 		}
 	}
 	return a, nil
+}
+
+func candidateArtifactDigest(r testgenflow.WorkRequest) (string, error) {
+	switch r.Request.InputMode {
+	case testgenflow.InputModeArtifactInput:
+		if r.Request.InputArtifactDigest != "" {
+			return r.Request.InputArtifactDigest, nil
+		}
+	case testgenflow.InputModeModelGeneration:
+		// The controller supplies this only after recording the code review.
+		// This pure materialization boundary does not manufacture an approval.
+		if r.Request.Generation != nil && r.Request.InputArtifactDigest == "" && r.Attempt > 0 && r.TestArtifactDigest != "" {
+			return r.TestArtifactDigest, nil
+		}
+	}
+	return "", fmt.Errorf("candidate does not have an admitted artifact identity")
 }

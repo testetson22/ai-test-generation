@@ -19,6 +19,8 @@ EXAMPLES = {
     "plan": "plan.json",
     "feedback": "feedback.json",
     "generation": "generation.json",
+    "generation-stage-task": "generation-stage-task.json",
+    "generation-stage-result": "generation-stage-result.json",
     "run-state": "run-state.json",
     "run-event": "run-event-checkpoint.json",
     "checkpoint": "checkpoint.json",

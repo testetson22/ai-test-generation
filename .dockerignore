@@ -1,0 +1,11 @@
+# The generation image uses the repository root as its context. Send only its
+# explicit build inputs, never local evidence, credentials, Git or virtualenvs.
+**
+!services/generation-worker/pyproject.toml
+!services/generation-worker/src/atg_generation_worker/__init__.py
+!services/generation-worker/src/atg_generation_worker/__main__.py
+!services/generation-worker/src/atg_generation_worker/harnesses.py
+!services/generation-worker/src/atg_generation_worker/protocol.py
+!services/generation-worker/src/atg_generation_worker/worker.py
+!workers/generation/Containerfile
+!workers/generation/entrypoint.sh

@@ -83,6 +83,9 @@ func unknown(message string, err error) error {
 
 func (w *Worker) validateRequest(r testgenflow.WorkRequest) error {
 	p := w.profile
+	if (r.Request.InputMode != testgenflow.InputModeArtifactInput && r.Request.InputMode != testgenflow.InputModeModelGeneration) || r.Request.CompletionMode != testgenflow.CompletionModePatchOnly {
+		return fmt.Errorf("local worker requires an explicit development input mode and patch-only policy")
+	}
 	if w.ProfileDigest() == "" || r.RunID == "" || r.IdempotencyKey == "" || len(r.RunID) > 256 || len(r.IdempotencyKey) > 1024 || r.Request.RepositoryURL != p.RepositoryURL || r.Request.Revision != p.Commit || r.Request.ProfileID != p.ID || r.Request.ProfileVersion != p.Version || r.Request.ProfileDigest != w.ProfileDigest() || r.Request.Subdirectory != p.Subdirectory || r.Request.VerifyCommit {
 		return fmt.Errorf("request does not match the fixed unsigned public-source development profile")
 	}

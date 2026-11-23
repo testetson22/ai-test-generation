@@ -549,6 +549,47 @@ closes the execution-only local-service gap, not live Analyze/Plan/Code,
 production profile authorization, S3 publication, a concrete Tekton API client,
 VPE/VEX integration, harness selection, or differential remediation proof.
 
+### Staged Generation Preparation (Offline)
+
+The next implementation adds `model_generation` as an explicit input mode,
+remaining `patch_only`. Go authorizes durable Analyze/Plan/Code operations and
+holds Plan/Code review checkpoints in the same run authority. Mode selection
+does not authorize external effects: `ATG_ALLOW_MODEL_CALLS=true` and explicit
+worker/model/reviewer configuration are separate prerequisites.
+
+The independently packaged `services/generation-worker/` consumes the versioned
+`generation-stage-task` contract and emits digest-bound `generation-stage-result`
+documents. Pydantic AI is an isolated optional SDK adapter. Aider has a common
+protocol/process seam but live execution is deliberately blocked until its
+budget and shell/tool limits can be verified. Neither harness owns run status,
+review decisions, retry authorization, task recovery, Maven or SCM.
+
+Each phase binds source snapshots, selected context, policy/image, model identity
+and exact serialized task bytes. Prior analyses/plans and repository contents
+are untrusted data, never tool or approval authority. Model-suggested test IDs
+do not authorize execution: code review supplies an independent inventory and
+retains the checked test artifact before the existing materialization path.
+Review IDs bind actor, role, authorization reference, current checkpoint,
+artifact, attempt, revision and time. Rejection, expired reviews and stated
+uncertainty cannot become successful or automatically approved execution.
+
+Model claims are filtered by input mode, execution profile and generation policy.
+Completed phases survive review/restart without new calls; review metadata is
+excluded from immutable model-phase inputs. Repair has new phase/review scope
+and bounded prior-candidate/verified-failure data. Final evidence preserves failed
+historical observations rather than requiring or pretending all attempts passed.
+Cancellation reconciles both worker roles and does not replace missing jobs.
+
+One `workers/generation/Containerfile` serves both local and eventual Tekton
+launchers. The Python base must be selected by digest; `.dockerignore` restricts
+the root build context to explicit module/entrypoint inputs. No images were
+built/pulled/pushed and no SDK packages installed. Migration
+`0005_generation_reviews.sql` and its live PostgreSQL tests were not applied/run.
+The existing artifact-input service was left untouched. No endpoint, credentials,
+SDK compatibility, model quality or live recovery result is inferred from the
+offline tests. The [verification gates](../../deploy/development-harness/README.md#generation-verification-gates)
+remain prerequisites to claiming a real generated-test service flow.
+
 ## Reconsideration Conditions
 
 Revisit a choice only with concrete evidence that it blocks a required supported

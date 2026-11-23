@@ -18,8 +18,9 @@ import (
 const DefaultMaxGenerationAttempts = 6
 
 const (
-	InputModeArtifactInput  = "artifact_input"
-	CompletionModePatchOnly = "patch_only"
+	InputModeArtifactInput   = "artifact_input"
+	InputModeModelGeneration = "model_generation"
+	CompletionModePatchOnly  = "patch_only"
 )
 
 var (
@@ -51,6 +52,9 @@ const (
 	StatusFailed          Status = "failed"
 	StatusCancelled       Status = "cancelled"
 	StatusOutcomeUnknown  Status = "outcome_unknown"
+	StatusWaitingReview   Status = "waiting_review"
+	StatusRejected        Status = "rejected"
+	StatusBlocked         Status = "blocked"
 )
 
 type Stage string
@@ -76,40 +80,46 @@ const (
 	AttemptAccepted  AttemptStatus = "accepted"
 	AttemptNoTests   AttemptStatus = "no_tests"
 	AttemptFailed    AttemptStatus = "failed"
+	AttemptRejected  AttemptStatus = "rejected"
+	AttemptBlocked   AttemptStatus = "blocked"
 )
 
 type EventType string
 
 const (
-	EventSourceResolved         EventType = "source_resolved"
-	EventSignatureVerified      EventType = "signature_verified"
-	EventBaselineCompleted      EventType = "baseline_completed"
-	EventGenerationStarted      EventType = "generation_started"
-	EventGenerationCompleted    EventType = "generation_completed"
-	EventArtifactInputCompleted EventType = "artifact_input_completed"
-	EventFocusedTestCompleted   EventType = "focused_test_completed"
-	EventFinalVerifyCompleted   EventType = "final_verify_completed"
-	EventPRCompleted            EventType = "pr_completed"
-	EventPatchPublished         EventType = "patch_published"
-	EventStageFailed            EventType = "stage_failed"
-	EventCancelRequested        EventType = "cancel_requested"
-	EventCancelled              EventType = "cancelled"
-	EventOutcomeUnknown         EventType = "outcome_unknown"
+	EventSourceResolved                EventType = "source_resolved"
+	EventSignatureVerified             EventType = "signature_verified"
+	EventBaselineCompleted             EventType = "baseline_completed"
+	EventGenerationStarted             EventType = "generation_started"
+	EventGenerationCompleted           EventType = "generation_completed"
+	EventGenerationCheckpointRequested EventType = "generation_checkpoint_requested"
+	EventGenerationReviewDecided       EventType = "generation_review_decided"
+	EventGenerationStopped             EventType = "generation_stopped"
+	EventArtifactInputCompleted        EventType = "artifact_input_completed"
+	EventFocusedTestCompleted          EventType = "focused_test_completed"
+	EventFinalVerifyCompleted          EventType = "final_verify_completed"
+	EventPRCompleted                   EventType = "pr_completed"
+	EventPatchPublished                EventType = "patch_published"
+	EventStageFailed                   EventType = "stage_failed"
+	EventCancelRequested               EventType = "cancel_requested"
+	EventCancelled                     EventType = "cancelled"
+	EventOutcomeUnknown                EventType = "outcome_unknown"
 )
 
 type Request struct {
-	RepositoryURL       string `json:"repository_url"`
-	Revision            string `json:"revision"`
-	BaseBranch          string `json:"base_branch"`
-	IssueIID            string `json:"issue_iid,omitempty"`
-	Subdirectory        string `json:"subdirectory"`
-	ProfileID           string `json:"profile_id"`
-	ProfileVersion      string `json:"profile_version"`
-	ProfileDigest       string `json:"profile_digest"`
-	VerifyCommit        bool   `json:"verify_commit"`
-	InputMode           string `json:"input_mode,omitempty"`
-	InputArtifactDigest string `json:"input_artifact_digest,omitempty"`
-	CompletionMode      string `json:"completion_mode,omitempty"`
+	RepositoryURL       string             `json:"repository_url"`
+	Revision            string             `json:"revision"`
+	BaseBranch          string             `json:"base_branch"`
+	IssueIID            string             `json:"issue_iid,omitempty"`
+	Subdirectory        string             `json:"subdirectory"`
+	ProfileID           string             `json:"profile_id"`
+	ProfileVersion      string             `json:"profile_version"`
+	ProfileDigest       string             `json:"profile_digest"`
+	VerifyCommit        bool               `json:"verify_commit"`
+	InputMode           string             `json:"input_mode,omitempty"`
+	InputArtifactDigest string             `json:"input_artifact_digest,omitempty"`
+	CompletionMode      string             `json:"completion_mode,omitempty"`
+	Generation          *GenerationRequest `json:"generation,omitempty"`
 }
 
 type GenerationAttempt struct {
@@ -133,45 +143,51 @@ type Candidate struct {
 }
 
 type Run struct {
-	RunID              string              `json:"run_id"`
-	IdempotencyKey     string              `json:"idempotency_key"`
-	RequestDigest      string              `json:"request_digest"`
-	Request            Request             `json:"request"`
-	Status             Status              `json:"status"`
-	Stage              Stage               `json:"stage"`
-	Revision           int64               `json:"revision"`
-	MaxAttempts        int                 `json:"max_attempts"`
-	ResolvedCommit     string              `json:"resolved_commit,omitempty"`
-	Attempts           []GenerationAttempt `json:"generation_attempts"`
-	TestsAdded         int                 `json:"tests_added"`
-	ChangedTestPaths   []string            `json:"changed_test_paths"`
-	PatchDigest        string              `json:"patch_digest,omitempty"`
-	Candidate          *Candidate          `json:"candidate,omitempty"`
-	TestArtifactDigest string              `json:"test_artifact_digest,omitempty"`
-	ResultArtifactRef  string              `json:"result_artifact_ref,omitempty"`
-	PRURL              string              `json:"pr_url"`
-	EvidenceRef        string              `json:"evidence_ref,omitempty"`
-	LastError          string              `json:"last_error,omitempty"`
-	CreatedAt          time.Time           `json:"created_at"`
-	UpdatedAt          time.Time           `json:"updated_at"`
-	CancelRequestedAt  *time.Time          `json:"cancel_requested_at,omitempty"`
+	RunID              string                `json:"run_id"`
+	IdempotencyKey     string                `json:"idempotency_key"`
+	RequestDigest      string                `json:"request_digest"`
+	Request            Request               `json:"request"`
+	Status             Status                `json:"status"`
+	Stage              Stage                 `json:"stage"`
+	Revision           int64                 `json:"revision"`
+	MaxAttempts        int                   `json:"max_attempts"`
+	ResolvedCommit     string                `json:"resolved_commit,omitempty"`
+	Attempts           []GenerationAttempt   `json:"generation_attempts"`
+	TestsAdded         int                   `json:"tests_added"`
+	ChangedTestPaths   []string              `json:"changed_test_paths"`
+	PatchDigest        string                `json:"patch_digest,omitempty"`
+	Candidate          *Candidate            `json:"candidate,omitempty"`
+	TestArtifactDigest string                `json:"test_artifact_digest,omitempty"`
+	ResultArtifactRef  string                `json:"result_artifact_ref,omitempty"`
+	PRURL              string                `json:"pr_url"`
+	EvidenceRef        string                `json:"evidence_ref,omitempty"`
+	LastError          string                `json:"last_error,omitempty"`
+	CreatedAt          time.Time             `json:"created_at"`
+	UpdatedAt          time.Time             `json:"updated_at"`
+	CancelRequestedAt  *time.Time            `json:"cancel_requested_at,omitempty"`
+	Checkpoint         *GenerationCheckpoint `json:"checkpoint,omitempty"`
+	Reviews            []GenerationReview    `json:"reviews,omitempty"`
+	GenerationOutcome  string                `json:"generation_outcome,omitempty"`
 }
 
 type Event struct {
-	ID                   string    `json:"event_id"`
-	ExpectedRevision     int64     `json:"expected_revision"`
-	Type                 EventType `json:"event_type"`
-	OccurredAt           time.Time `json:"occurred_at"`
-	ResolvedCommit       string    `json:"resolved_commit,omitempty"`
-	Succeeded            bool      `json:"succeeded,omitempty"`
-	ChangedTestPaths     []string  `json:"changed_test_paths,omitempty"`
-	PatchDigest          string    `json:"patch_digest,omitempty"`
-	TestArtifactDigest   string    `json:"test_artifact_digest,omitempty"`
-	ResultArtifactRef    string    `json:"result_artifact_ref,omitempty"`
-	Diagnostic           string    `json:"diagnostic,omitempty"`
-	PRURL                string    `json:"pr_url,omitempty"`
-	EvidenceRef          string    `json:"evidence_ref,omitempty"`
-	TerminationConfirmed bool      `json:"termination_confirmed,omitempty"`
+	ID                   string                `json:"event_id"`
+	ExpectedRevision     int64                 `json:"expected_revision"`
+	Type                 EventType             `json:"event_type"`
+	OccurredAt           time.Time             `json:"occurred_at"`
+	ResolvedCommit       string                `json:"resolved_commit,omitempty"`
+	Succeeded            bool                  `json:"succeeded,omitempty"`
+	ChangedTestPaths     []string              `json:"changed_test_paths,omitempty"`
+	PatchDigest          string                `json:"patch_digest,omitempty"`
+	TestArtifactDigest   string                `json:"test_artifact_digest,omitempty"`
+	ResultArtifactRef    string                `json:"result_artifact_ref,omitempty"`
+	Diagnostic           string                `json:"diagnostic,omitempty"`
+	PRURL                string                `json:"pr_url,omitempty"`
+	EvidenceRef          string                `json:"evidence_ref,omitempty"`
+	TerminationConfirmed bool                  `json:"termination_confirmed,omitempty"`
+	Checkpoint           *GenerationCheckpoint `json:"checkpoint,omitempty"`
+	Review               *GenerationReview     `json:"review,omitempty"`
+	Outcome              string                `json:"outcome,omitempty"`
 }
 
 func NewRun(runID, idempotencyKey string, request Request, maxAttempts int, now time.Time) (Run, error) {
@@ -208,6 +224,7 @@ func NewRun(runID, idempotencyKey string, request Request, maxAttempts int, now 
 		CreatedAt:        now,
 		UpdatedAt:        now,
 	}
+	run = cloneRun(run)
 	if err := run.Validate(); err != nil {
 		return Run{}, err
 	}
@@ -234,14 +251,24 @@ func (r Request) Validate() error {
 	if !validFlowIdent(r.ProfileID) || !profileVersionPattern.MatchString(r.ProfileVersion) || !sha256Pattern.MatchString(r.ProfileDigest) {
 		return fmt.Errorf("%w: immutable execution-profile identity is required", ErrInvalidRequest)
 	}
-	if r.InputMode != "" && r.InputMode != InputModeArtifactInput {
+	if r.InputMode != "" && r.InputMode != InputModeArtifactInput && r.InputMode != InputModeModelGeneration {
 		return fmt.Errorf("%w: unsupported input mode", ErrInvalidRequest)
 	}
-	if r.InputMode == InputModeArtifactInput && !sha256Pattern.MatchString(r.InputArtifactDigest) || r.InputMode == "" && r.InputArtifactDigest != "" {
+	if r.InputMode == InputModeArtifactInput && !sha256Pattern.MatchString(r.InputArtifactDigest) || r.InputMode != InputModeArtifactInput && r.InputArtifactDigest != "" {
 		return fmt.Errorf("%w: artifact input requires a SHA256 content address and explicit mode", ErrInvalidRequest)
 	}
 	if r.CompletionMode != "" && r.CompletionMode != CompletionModePatchOnly {
 		return fmt.Errorf("%w: unsupported completion mode", ErrInvalidRequest)
+	}
+	if r.InputMode == InputModeModelGeneration {
+		if r.Generation == nil || r.CompletionMode != CompletionModePatchOnly {
+			return fmt.Errorf("%w: model generation requires generation input and patch-only completion", ErrInvalidRequest)
+		}
+		if err := r.Generation.Validate(); err != nil {
+			return err
+		}
+	} else if r.Generation != nil {
+		return fmt.Errorf("%w: generation input requires explicit model generation mode", ErrInvalidRequest)
 	}
 	return nil
 }
@@ -262,7 +289,15 @@ func (r Run) Apply(event Event) (Run, error) {
 	if event.OccurredAt.Before(r.UpdatedAt) {
 		return Run{}, fmt.Errorf("%w: event timestamp precedes the current run state", ErrInvalidEvent)
 	}
+	if err := r.validateGenerationEvent(event); err != nil {
+		return Run{}, err
+	}
 	event.OccurredAt = event.OccurredAt.UTC().Truncate(time.Microsecond)
+	if event.Type == EventGenerationReviewDecided && event.Review != nil {
+		review := *event.Review
+		review.DecidedAt = event.OccurredAt
+		event.Review = &review
+	}
 	next := cloneRun(r)
 	next.Revision++
 	next.UpdatedAt = event.OccurredAt
@@ -300,7 +335,7 @@ func (r Run) Apply(event Event) (Run, error) {
 			next.Stage = StageGenerate
 		}
 	case EventGenerationStarted:
-		if r.Status != StatusRunning || r.Stage != StageGenerate || r.Request.InputMode != "" || len(r.Attempts) >= r.MaxAttempts || len(r.Attempts) > 0 && r.Attempts[len(r.Attempts)-1].Status == AttemptRunning {
+		if r.Status != StatusRunning || r.Stage != StageGenerate || r.Request.InputMode == InputModeArtifactInput || len(r.Attempts) >= r.MaxAttempts || len(r.Attempts) > 0 && r.Attempts[len(r.Attempts)-1].Status == AttemptRunning {
 			return Run{}, fmt.Errorf("%w: generation attempt is not authorized", ErrInvalidTransition)
 		}
 		next.Attempts = append(next.Attempts, GenerationAttempt{
@@ -343,6 +378,10 @@ func (r Run) Apply(event Event) (Run, error) {
 		attempt.PatchDigest = strings.ToLower(event.PatchDigest)
 		attempt.TestArtifactDigest = strings.ToLower(event.TestArtifactDigest)
 		next.Stage = StageFocusedTest
+	case EventGenerationCheckpointRequested, EventGenerationReviewDecided, EventGenerationStopped:
+		if err := next.applyGenerationEvent(r, event); err != nil {
+			return Run{}, err
+		}
 	case EventArtifactInputCompleted:
 		if r.Status != StatusRunning || r.Stage != StageArtifactInput || r.Request.InputMode != InputModeArtifactInput || r.Candidate != nil {
 			return Run{}, fmt.Errorf("%w: artifact input is not expected at this stage", ErrInvalidTransition)
@@ -467,12 +506,13 @@ func (r Run) Apply(event Event) (Run, error) {
 	case EventStageFailed:
 		return failedRun(r, event, event.Diagnostic)
 	case EventCancelRequested:
-		if r.Status != StatusQueued && r.Status != StatusRunning {
+		if r.Status != StatusQueued && r.Status != StatusRunning && r.Status != StatusWaitingReview {
 			return Run{}, fmt.Errorf("%w: cancellation is not available for %s runs", ErrInvalidTransition, r.Status)
 		}
 		at := event.OccurredAt.UTC()
 		next.CancelRequestedAt = &at
 		next.Status = StatusCancelRequested
+		next.Checkpoint = nil
 	case EventCancelled:
 		if r.Status != StatusCancelRequested || !event.TerminationConfirmed {
 			return Run{}, fmt.Errorf("%w: cancellation requires a pending request and confirmed worker termination", ErrInvalidTransition)
@@ -659,12 +699,28 @@ func (r Run) Validate() error {
 	if r.CancelRequestedAt != nil && r.CancelRequestedAt.Before(r.CreatedAt) {
 		return fmt.Errorf("%w: cancellation timestamp is invalid", ErrInvalidRun)
 	}
+	if err := r.validateGenerationState(); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (r Run) AttemptCount() int { return len(r.Attempts) }
 
 func cloneRun(r Run) Run {
+	if r.Request.Generation != nil {
+		generation := *r.Request.Generation
+		generation.ContextPaths = slices.Clone(generation.ContextPaths)
+		r.Request.Generation = &generation
+	}
+	if r.Checkpoint != nil {
+		checkpoint := *r.Checkpoint
+		r.Checkpoint = &checkpoint
+	}
+	r.Reviews = slices.Clone(r.Reviews)
+	for i := range r.Reviews {
+		r.Reviews[i].ExpectedTestIDs = slices.Clone(r.Reviews[i].ExpectedTestIDs)
+	}
 	if r.Candidate != nil {
 		candidate := *r.Candidate
 		candidate.ChangedTestPaths = append([]string(nil), candidate.ChangedTestPaths...)
@@ -813,7 +869,7 @@ func validSubdirectory(value string) bool {
 
 func validStatus(value Status) bool {
 	switch value {
-	case StatusQueued, StatusRunning, StatusCancelRequested, StatusCompleted, StatusFailed, StatusCancelled, StatusOutcomeUnknown:
+	case StatusQueued, StatusRunning, StatusCancelRequested, StatusCompleted, StatusFailed, StatusCancelled, StatusOutcomeUnknown, StatusWaitingReview, StatusRejected, StatusBlocked:
 		return true
 	default:
 		return false
@@ -831,14 +887,16 @@ func validStage(value Stage) bool {
 
 func validAttemptStatus(value AttemptStatus) bool {
 	switch value {
-	case AttemptRunning, AttemptGenerated, AttemptAccepted, AttemptNoTests, AttemptFailed:
+	case AttemptRunning, AttemptGenerated, AttemptAccepted, AttemptNoTests, AttemptFailed, AttemptRejected, AttemptBlocked:
 		return true
 	default:
 		return false
 	}
 }
 
-func isActive(status Status) bool { return status == StatusQueued || status == StatusRunning }
+func isActive(status Status) bool {
+	return status == StatusQueued || status == StatusRunning || status == StatusWaitingReview
+}
 
 func digest(value []byte) string {
 	sum := sha256.Sum256(value)

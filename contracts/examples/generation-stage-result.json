@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "job_id": "generation-fixture-analyze-1",
+  "run_id": "generation-fixture-run",
+  "attempt": 1,
+  "phase": "analyze",
+  "request_digest": "sha256:9d0b4bd86bc5afd379c5185b22db196add5ad0948c2396eef699608a6c68978f",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "profile_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "policy_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "harness": "pydantic_ai",
+  "model": {
+    "provider": "openai_compatible",
+    "endpoint": "https://model.example.invalid/v1",
+    "name": "synthetic-fixture-model"
+  },
+  "status": "completed",
+  "output": {
+    "summary": "Synthetic protocol fixture, not evidence of a model invocation.",
+    "facts": [
+      {
+        "claim": "The supplied balance method returns zero.",
+        "citations": [{"path": "src/main/java/example/Account.java", "start_line": 2, "end_line": 2}]
+      }
+    ],
+    "gaps": ["Runtime behavior was not exercised."],
+    "limitations": ["Synthetic fixture only; human review required; no execution or approval is attested."]
+  },
+  "usage": {"input_tokens": null, "output_tokens": null, "requests": null},
+  "versions": {"worker": "0.1.0", "python": "unknown", "pydantic-ai-slim": "not_installed", "live_integration": "not_verified"},
+  "diagnostic": "synthetic_fixture_only"
+}

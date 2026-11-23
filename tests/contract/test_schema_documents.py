@@ -1,6 +1,7 @@
 import json
 import pathlib
 import copy
+import hashlib
 import sys
 import unittest
 
@@ -49,12 +50,62 @@ EXPECTED = {
     "run-state",
     "run-event",
 }
+STAGE_PROTOCOLS = {"generation-stage-task", "generation-stage-result"}
 
 
 class ContractSchemaTests(unittest.TestCase):
     def test_version_one_contains_all_ticket_contracts(self):
         actual = {path.stem.removesuffix(".schema") for path in CONTRACTS.glob("*.schema.json")}
-        self.assertEqual(actual, EXPECTED | {"common"})
+        self.assertEqual(actual, EXPECTED | STAGE_PROTOCOLS | {"common"})
+
+    def test_generation_stage_protocol_has_its_explicit_wire_version(self):
+        for name in STAGE_PROTOCOLS:
+            with self.subTest(name=name):
+                schema = json.loads((CONTRACTS / f"{name}.schema.json").read_text())
+                self.assertEqual(schema["properties"]["schema_version"], {"const": "1"})
+                self.assertIn("schema_version", schema["required"])
+                self.assertFalse(schema["additionalProperties"])
+                Draft202012Validator.check_schema(schema)
+
+    def test_generation_stage_fixture_binds_exact_task_serialization(self):
+        raw = (CONTRACTS.parent / "examples/generation-stage-task.json").read_bytes()
+        result = self._load("examples", "generation-stage-result.json")
+        self.assertEqual(result["request_digest"], "sha256:" + hashlib.sha256(raw).hexdigest())
+
+    def test_generation_stage_task_schema_rejects_unbounded_or_credential_fields(self):
+        original = self._load("examples", "generation-stage-task.json")
+        validator = self._validator("generation-stage-task")
+        for name, value in (("schema_version", "2"), ("attempt", 0), ("api_key", "synthetic-only"),
+                            ("profile_digest", "wrong")):
+            with self.subTest(name=name), self.assertRaises(ValidationError):
+                validator.validate({**original, name: value})
+        for source in ({**original["source"], "files": []},
+                       {**original["source"], "files": original["source"]["files"] * 65},
+                       {**original["source"], "repository_url": "https://user:secret@git.example.invalid/repo"}):
+            with self.subTest(source_keys=list(source)), self.assertRaises(ValidationError):
+                validator.validate({**original, "source": source})
+        for name in original["limits"]:
+            with self.subTest(limit=name), self.assertRaises(ValidationError):
+                validator.validate({**original, "limits": {**original["limits"], name: 0}})
+
+    def test_generation_stage_result_schema_enforces_phase_shapes_and_nonpass_outcomes(self):
+        original = self._load("examples", "generation-stage-result.json")
+        validator = self._validator("generation-stage-result")
+        for status in ("blocked", "inconclusive", "failed"):
+            document = {**original, "status": status, "output": {}}
+            validator.validate(document)
+            validate_contract_document(document, "generation-stage-result")
+            with self.subTest(status=status), self.assertRaises(ValidationError):
+                validator.validate({**document, "output": original["output"]})
+        for phase, output in (
+            ("analyze", {**original["output"], "approved": True}),
+            ("plan", {"summary": "Empty", "scenarios": [], "limitations": []}),
+            ("code", {"summary": "Empty", "files": [], "suggested_test_ids": [], "limitations": []}),
+            ("code", {"summary": "Wrong path", "files": [{"path": "pom.xml", "content": "data"}],
+                      "suggested_test_ids": [], "limitations": []}),
+        ):
+            with self.subTest(phase=phase, output=output), self.assertRaises(ValidationError):
+                validator.validate({**original, "phase": phase, "output": output})
 
     def test_every_contract_has_discriminator_and_version(self):
         for name in EXPECTED:
@@ -82,6 +133,8 @@ class ContractSchemaTests(unittest.TestCase):
             "plan.json": "plan",
             "feedback.json": "feedback",
             "generation.json": "generation",
+            "generation-stage-task.json": "generation-stage-task",
+            "generation-stage-result.json": "generation-stage-result",
             "run-state.json": "run-state",
             "run-event-checkpoint.json": "run-event",
             "checkpoint.json": "checkpoint",

@@ -70,10 +70,11 @@ platform are selected by these framework-neutral components.
 
 ## Real Local Execution
 
-The opt-in `local-development` mode runs an **execution-only, artifact-input,
-patch-only** flow. It is not the Analyze/Plan/Code generator and does not create
-approvals, model results, pushes, or PRs. The independently buildable Java 17
-worker and fixed development profile live in `workers/java17-maven/`.
+The validated default `local-development` mode runs an **execution-only,
+artifact-input, patch-only** flow. It does not create approvals, model results,
+pushes, or PRs. The Java 17 worker/profile live in `workers/java17-maven/`.
+The additional staged-generation code below is opt-in, default-closed, and
+offline-validated only; it does not change that default.
 
 Required settings are `ATG_DATABASE_URL`, `ATG_ARTIFACT_ROOT`,
 `ATG_LOCAL_PROFILE`, and `ATG_DEVELOPMENT_BEARER_TOKEN` (at least 24 characters).
@@ -132,3 +133,66 @@ for build/start/validation commands. `scripts/validate_local_execution.py` is a
 key-free-with-respect-to-models, opt-in HTTP acceptance client, not a service
 dependency. Native unit tests remain model-free; PostgreSQL and OCI integration
 tests require their explicit test configuration.
+
+## Staged Generation Gate
+
+`ATG_LOCAL_INPUT_MODE=model_generation` selects controller-owned Analyze/Plan/Code
+handoffs. `ATG_ALLOW_MODEL_CALLS=true` is also required. The permission check
+precedes dependency probes, artifact creation, credential access, or database
+startup; merely selecting the mode or installing an SDK does not authorize calls.
+
+`services/generation-worker/` is an independent bounded Python worker, not a
+lifecycle controller or a dependency on the Python reference services. Its
+versioned task/result schemas are
+`contracts/v1/generation-stage-{task,result}.schema.json`. One shared
+`workers/generation/Containerfile` builds harness-specific package extras for
+local or eventual Tekton use. It requires an explicitly selected digest-pinned
+Python base. The root `.dockerignore` sends only its explicit build inputs,
+excluding local state, credentials, Git history and virtualenvs.
+
+After separately permitted setup, model mode requires:
+
+- `ATG_GENERATION_POLICY`: nonsecret policy selecting the HTTPS OpenAI-compatible
+  endpoint/model, harness, context files and bounded request/token/output limits.
+- `ATG_GENERATION_IMAGE`: an existing local image, frozen into the policy binding.
+  Readiness does not pull images or call the model.
+- `ATG_GENERATION_CREDENTIAL_FILE`: a private bounded regular nonsymlink key file.
+  The key is admitted separately into worker tmpfs, never task JSON, command
+  arguments, container metadata, prompts, artifacts, or the Maven environment.
+- `ATG_DEVELOPMENT_REVIEWER_ID`, `ATG_DEVELOPMENT_REVIEWER_ROLE` (`developer` or
+  `reviewer`), and `ATG_DEVELOPMENT_REVIEW_AUTHORIZATION_REF`: actual configured
+  attribution; no actor or role is accepted from model output or the review body.
+- Optional `ATG_GENERATION_MAX_ATTEMPTS` (default 2, maximum 6) and
+  `ATG_GENERATION_REVIEW_TTL` (default `1h`, range `1m` through `24h`).
+
+Create accepts `objective`, not caller-selected context, models, or commands.
+Each phase has a durable identity and retained inputs/outputs. The run pauses as
+`waiting_review` after Plan and Code. Completed phases are reused after review
+or restart; review metadata cannot mutate their input hashes or become model
+context. No later phase/test is dispatched before its checkpoint approval.
+
+`POST /development/test-generation-runs/{runID}/reviews` accepts
+`expected_revision`, `decision_id`, `checkpoint_id`, `stage`, `artifact_ref`,
+`action` (`approve`/`reject`), and nonempty `rationale`. Code approval additionally
+requires independently supplied `expected_test_ids`. The handler retains the
+checked test artifact from the reviewed result; model-suggested IDs never become
+execution authority automatically. Decisions are payload-bound and replayable;
+expired/stale/cross-policy/wrong-artifact decisions conflict. Expired checkpoints
+can be cancelled, not silently approved.
+
+Rejection and explicit model `blocked`/`inconclusive` outcomes stop later work.
+Repair attempts have fresh phase keys/reviews and bounded prior-candidate and
+verified failure-log context. Go alone authorizes retries. Cancellation and final
+cleanup reconcile both worker roles; a missing ambiguous job cannot trigger a
+replacement model call. Historical failed observations remain retained.
+
+Pydantic AI has a gated live adapter, validated only with SDK-free/fake-transport
+tests so far. **Live Aider remains blocked** because its hard request/token and
+shell/tool controls are unverified. Its protocol/package variant and process
+seam exist, but neither installing Aider nor setting the model flag bypasses the
+block. Readiness rejects unsupported/co-installed harness configurations.
+
+Image builds, SDK installation/compatibility, real model calls, migration
+`0005_generation_reviews.sql`, and real generation-to-Maven validation remain
+external-operation gates. They were not performed during this offline pass.
+The previously running artifact-input service was not restarted or changed.

@@ -20,7 +20,9 @@ type WorkRequest struct {
 	RepairFeedback     string
 	TestArtifactDigest string
 	PatchDigest        string
-	ReconcileOnly      bool `json:"-"`
+	ReconcileOnly      bool               `json:"-"`
+	RequestDigest      string             `json:",omitempty"`
+	Reviews            []GenerationReview `json:",omitempty"`
 }
 
 type MavenPhase string
@@ -40,6 +42,10 @@ type GenerationResult struct {
 	ChangedTestPaths   []string
 	PatchDigest        string
 	TestArtifactDigest string
+	Checkpoint         *GenerationCheckpoint `json:",omitempty"`
+	Outcome            string                `json:",omitempty"`
+	EvidenceRef        string                `json:",omitempty"`
+	Diagnostic         string                `json:",omitempty"`
 }
 
 type MavenResult struct {
@@ -125,7 +131,7 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 	if err := run.Validate(); err != nil {
 		return Run{}, err
 	}
-	if run.Status == StatusCompleted || run.Status == StatusFailed || run.Status == StatusCancelled || run.Status == StatusOutcomeUnknown {
+	if run.Status == StatusCompleted || run.Status == StatusFailed || run.Status == StatusCancelled || run.Status == StatusOutcomeUnknown || run.Status == StatusRejected || run.Status == StatusBlocked || run.Status == StatusWaitingReview {
 		return run, nil
 	}
 	if run.Status == StatusCancelRequested {
@@ -157,6 +163,9 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 		return c.runMaven(ctx, run, MavenPhasePackage, EventBaselineCompleted)
 
 	case StageGenerate:
+		if run.Request.InputMode == InputModeModelGeneration {
+			return c.advanceModelGeneration(ctx, run)
+		}
 		if c.Generation == nil {
 			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "generation worker is unconfigured"})
 		}
@@ -171,6 +180,9 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 		work := c.work(run, "generate", attempt)
 		work.ReconcileOnly = started
 		work.RepairFeedback = run.LastError
+		if run.Request.InputMode == InputModeModelGeneration && attempt > 1 && len(run.Attempts) >= attempt-1 {
+			work.RepairFeedback = run.Attempts[attempt-2].LastError
+		}
 		result, workErr := c.Generation.GenerateTests(ctx, work)
 		if ctx.Err() != nil || errors.Is(workErr, ErrWorkPending) || errors.Is(workErr, context.Canceled) || errors.Is(workErr, context.DeadlineExceeded) {
 			return c.fail(ctx, run, workerFailure(workErr))
@@ -242,6 +254,37 @@ func (c *Coordinator) Advance(ctx context.Context, runID string) (Run, error) {
 	}
 }
 
+func (c *Coordinator) advanceModelGeneration(ctx context.Context, run Run) (Run, error) {
+	started := len(run.Attempts) > 0 && run.Attempts[len(run.Attempts)-1].Status == AttemptRunning
+	if !started {
+		return c.record(ctx, run, Event{Type: EventGenerationStarted}, false)
+	}
+	if c.Generation == nil {
+		return c.fail(ctx, run, &WorkerFailure{Diagnostic: "generation worker is unconfigured"})
+	}
+	work := c.work(run, "generate", run.AttemptCount())
+	work.RepairFeedback = run.LastError
+	result, err := c.Generation.GenerateTests(ctx, work)
+	if err != nil || ctx.Err() != nil {
+		return c.fail(ctx, run, workerFailure(err))
+	}
+	// The staged worker journals each bounded phase independently. Checkpoints
+	// and explicit model uncertainty are observations, not worker failures.
+	if result.Checkpoint != nil {
+		if result.Outcome != "" || len(result.ChangedTestPaths) != 0 || result.PatchDigest != "" || result.TestArtifactDigest != "" {
+			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "worker result failed validation"})
+		}
+		return c.record(ctx, run, Event{Type: EventGenerationCheckpointRequested, Checkpoint: result.Checkpoint}, true)
+	}
+	if result.Outcome != "" {
+		if len(result.ChangedTestPaths) != 0 || result.PatchDigest != "" || result.TestArtifactDigest != "" {
+			return c.fail(ctx, run, &WorkerFailure{Diagnostic: "worker result failed validation"})
+		}
+		return c.record(ctx, run, Event{Type: EventGenerationStopped, Outcome: result.Outcome, EvidenceRef: result.EvidenceRef, Diagnostic: result.Diagnostic}, true)
+	}
+	return c.record(ctx, run, Event{Type: EventGenerationCompleted, ChangedTestPaths: result.ChangedTestPaths, PatchDigest: result.PatchDigest, TestArtifactDigest: result.TestArtifactDigest}, true)
+}
+
 func (c *Coordinator) runMaven(ctx context.Context, run Run, phase MavenPhase, eventType EventType) (Run, error) {
 	if c.Maven == nil {
 		return c.fail(ctx, run, &WorkerFailure{Diagnostic: "Maven profile runner is unconfigured"})
@@ -309,7 +352,7 @@ func (c *Coordinator) record(ctx context.Context, run Run, event Event, workerRe
 }
 
 func (c *Coordinator) work(run Run, operation string, attempt int) WorkRequest {
-	key := digest([]byte(run.RunID)) + ":" + operation + ":" + fmt.Sprint(attempt)
+	key := WorkKey(run.RunID, operation, attempt)
 	work := WorkRequest{
 		RunID:              run.RunID,
 		IdempotencyKey:     key,
@@ -319,6 +362,16 @@ func (c *Coordinator) work(run Run, operation string, attempt int) WorkRequest {
 		ChangedTestPaths:   append([]string(nil), run.ChangedTestPaths...),
 		PatchDigest:        run.PatchDigest,
 		TestArtifactDigest: run.TestArtifactDigest,
+	}
+	if run.Request.InputMode == InputModeModelGeneration {
+		isolated := cloneRun(run)
+		work.Request = isolated.Request
+		work.RequestDigest = run.RequestDigest
+		for _, review := range isolated.Reviews {
+			if review.Attempt == attempt {
+				work.Reviews = append(work.Reviews, review)
+			}
+		}
 	}
 	if run.Stage == StageFocusedTest {
 		if run.Candidate != nil {
@@ -333,6 +386,10 @@ func (c *Coordinator) work(run Run, operation string, attempt int) WorkRequest {
 		}
 	}
 	return work
+}
+
+func WorkKey(runID, operation string, attempt int) string {
+	return digest([]byte(runID)) + ":" + operation + ":" + fmt.Sprint(attempt)
 }
 
 func workerFailure(err error) *WorkerFailure {

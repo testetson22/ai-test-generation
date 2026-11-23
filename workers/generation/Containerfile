@@ -1,0 +1,20 @@
+# No default base exists: the caller must supply an independently selected,
+# digest-pinned Python image. Resolving/pulling it and installing SDKs require
+# separate permission; this recipe has not been built or externally verified.
+ARG PYTHON_BASE
+FROM ${PYTHON_BASE}
+ARG PYTHON_BASE
+ARG HARNESS=pydantic_ai
+RUN python -c 'import os,re; assert re.fullmatch(r"[^\s@]+@sha256:[a-f0-9]{64}", os.environ["PYTHON_BASE"]), "PYTHON_BASE must be explicitly digest pinned"'
+COPY services/generation-worker /opt/build/generation-worker
+RUN case "$HARNESS" in pydantic_ai) extra=pydantic-ai ;; aider) extra=aider ;; *) exit 64 ;; esac \
+    && python -m pip install --no-cache-dir "/opt/build/generation-worker[$extra]" \
+    && python -c 'import shutil; assert all(shutil.which(x) for x in ("sh", "tar", "timeout", "id", "sleep")), "base lacks required POSIX/coreutils runtime"' \
+    && rm -rf /opt/build/generation-worker
+COPY workers/generation/entrypoint.sh /opt/atg/entrypoint.sh
+RUN chmod 0555 /opt/atg/entrypoint.sh
+LABEL io.lightpath.atg.worker="generation-v1" \
+      io.lightpath.atg.harness="${HARNESS}"
+USER 65532:65532
+WORKDIR /work
+ENTRYPOINT ["/bin/sh", "/opt/atg/entrypoint.sh"]
