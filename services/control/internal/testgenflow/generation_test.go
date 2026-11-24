@@ -186,6 +186,7 @@ func TestGenerationReviewRequiresAttributionAndExactUnexpiredScope(t *testing.T)
 		"wrong decision time":      func(r *GenerationReview) { r.DecidedAt = r.DecidedAt.Add(time.Second) },
 		"fabricated plan IDs":      func(r *GenerationReview) { r.ExpectedTestIDs = []string{"example.Test#works"} },
 		"fabricated plan artifact": func(r *GenerationReview) { r.ApprovedTestArtifactDigest = digest([]byte("tests")) },
+		"invalid decision mode":    func(r *GenerationReview) { r.DecisionMode = "autonomous" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := valid

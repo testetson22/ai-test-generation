@@ -29,6 +29,31 @@ const generationFixturePath = "src/test/java/example/GeneratedTest.java"
 
 // These tests use real domain transitions and CAS bytes, but no runtime workers,
 // database, HTTP listener, model SDK, source checkout, or Maven process.
+func TestAutomaticReviewGateApprovesCheckpointsWithAttribution(t *testing.T) {
+	h := newGenerationServiceFixture(t, true)
+	h.config.API.ReviewGateMode = "automatic"
+	h.service = h.restart(t)
+	h.create(t)
+	completed := h.terminal(t)
+	if completed.Status != testgenflow.StatusCompleted || completed.Stage != testgenflow.StageDone || completed.TestsAdded != 1 || completed.ResultArtifactRef == "" {
+		t.Fatalf("automatic gate did not complete the run: %#v", completed)
+	}
+	if len(completed.Reviews) != 2 {
+		t.Fatalf("automatic gate must record both checkpoint decisions: %#v", completed.Reviews)
+	}
+	for _, review := range completed.Reviews {
+		if review.DecisionMode != "automatic" || review.Action != "approve" || review.ReviewerID != h.config.API.ReviewerID || review.ReviewerRole != h.config.API.ReviewerRole || review.AuthorizationRef != h.config.API.ReviewAuthorizationRef || review.Rationale == "" {
+			t.Fatalf("automatic decision lost attribution or mode marker: %#v", review)
+		}
+	}
+	if !slices.Equal(completed.Reviews[1].ExpectedTestIDs, []string{"example.GeneratedTest#modelSuggested"}) || completed.Reviews[1].ApprovedTestArtifactDigest == "" {
+		t.Fatalf("automatic code approval lost the model-suggested inventory or approved artifact: %#v", completed.Reviews[1])
+	}
+	if !slices.Equal(h.model.phases(), []string{"analyze", "plan", "code"}) || !slices.Equal(h.worker.phases(), []testgenflow.MavenPhase{testgenflow.MavenPhasePackage, testgenflow.MavenPhaseFocusedTests, testgenflow.MavenPhaseFinalVerify}) {
+		t.Fatalf("automatic gate changed the staged phase order: model=%v worker=%v", h.model.phases(), h.worker.phases())
+	}
+}
+
 func TestGenerationServiceReviewsResumeAcrossRestartAndPublishRetainedPatch(t *testing.T) {
 	h := newGenerationServiceFixture(t, true)
 	initial := h.create(t)
@@ -1190,7 +1215,15 @@ func (w *generationFakeModel) RunStage(ctx context.Context, request agentworker.
 	if diagnostic == "" {
 		diagnostic = "synthetic generation fixture; not live model evidence"
 	}
-	ref, err := generationPut(ctx, w.files, map[string]any{"synthetic": true, "component": "fake_generation_phase", "run_id": request.Work.RunID, "attempt": request.Work.Attempt, "phase": request.Phase, "status": status, "diagnostic": diagnostic, "suggested_test_ids": []string{"example.GeneratedTest#modelSuggested"}})
+	content := map[string]any{"synthetic": true, "component": "fake_generation_phase", "run_id": request.Work.RunID, "attempt": request.Work.Attempt, "phase": request.Phase, "status": status, "diagnostic": diagnostic, "suggested_test_ids": []string{"example.GeneratedTest#modelSuggested"}}
+	if request.Phase == "code" {
+		outputRef, err := generationPut(ctx, w.files, map[string]any{"output": map[string]any{"suggested_test_ids": []string{"example.GeneratedTest#modelSuggested"}}})
+		if err != nil {
+			return agentworker.StageResult{}, err
+		}
+		content["result_ref"] = outputRef
+	}
+	ref, err := generationPut(ctx, w.files, content)
 	result := agentworker.StageResult{ArtifactRef: ref, Status: status, Diagnostic: diagnostic}
 	if err == nil {
 		w.jobs[request.Work.IdempotencyKey] = result

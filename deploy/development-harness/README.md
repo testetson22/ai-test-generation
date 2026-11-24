@@ -79,6 +79,12 @@ export ATG_DEVELOPMENT_BEARER_TOKEN="$(openssl rand -hex 24)"
 services/control/bin/atg-control
 ```
 
+Reviews are manual by default. Set
+`ATG_GENERATION_REVIEW_GATE_MODE=automatic` to let the service decide
+checkpoints itself: automatic decisions carry full attribution and a
+`decision_mode: automatic` audit marker, and approve only structurally
+validated stage output. Automatic mode requires model generation mode.
+
 The default `profile-unit.json` runs target tests offline after dependency
 preparation. For approved local development runs that need test egress, select
 `workers/java17-maven/profile-unit-online.json`; its distinct profile digest

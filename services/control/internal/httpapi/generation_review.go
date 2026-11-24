@@ -24,6 +24,12 @@ func ValidDevelopmentReviewer(config TestGenerationDevelopmentConfig) bool {
 			return false
 		}
 	}
+	if config.ReviewGateMode != "" && config.ReviewGateMode != "manual" && config.ReviewGateMode != "automatic" {
+		return false
+	}
+	if config.ReviewGateMode == "automatic" && config.InputMode != testgenflow.InputModeModelGeneration {
+		return false
+	}
 	return generationReviewIDPattern.MatchString(config.ReviewerID) && (config.ReviewerRole == "developer" || config.ReviewerRole == "reviewer")
 }
 

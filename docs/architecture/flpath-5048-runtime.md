@@ -294,7 +294,25 @@ documents retains both subjects' outcomes, their commits, the base subject's
 command log, and the prior candidate, so the next attempt can revise the input
 mechanism. Declared-outcome parsing is best-effort and can only fail an
 attempt, never pass one; the plan output that declares the oracle was already
-human-approved at its review checkpoint.
+human-approved at its review checkpoint. Oracle enforcement lives in the
+provider-neutral coordinator (`testgenflow.DifferentialOracleMismatch`) behind
+an `ArtifactReader` seam, so any execution provider returning the
+`PairEvidence` shape gets the same enforcement without the local worker
+composition.
+
+Review gates are configurable: `manual` (default) requires an attributable
+human decision through the review API, and `automatic` lets the service apply
+the decision itself when a checkpoint is reached. Automatic decisions carry
+full attribution plus a `decision_mode: automatic` marker in the durable audit
+trail, use a deterministic decision identity and time derived from the
+checkpoint so retries replay identically, and approve only what independent
+structural validation already admitted (protocol-validated paths, test
+identifiers, declared oracles, scenario accounting). Code approvals under the
+automatic gate derive their expected-test inventory from the stage result's
+model-suggested identifiers and still pass through the materialization
+validation that binds the retained artifact. Configure the mode with
+`ATG_GENERATION_REVIEW_GATE_MODE=manual|automatic`; automatic mode requires
+model generation mode.
 
 The primary 5048 success criterion is a real base/candidate run with attributable
 execution evidence sufficient to establish the observed test outcomes on both

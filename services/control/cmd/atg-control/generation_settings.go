@@ -50,8 +50,9 @@ func loadGenerationSettings(getenv func(string) string) (generationSettings, err
 	s.reviewer.ReviewerID = getenv("ATG_DEVELOPMENT_REVIEWER_ID")
 	s.reviewer.ReviewerRole = getenv("ATG_DEVELOPMENT_REVIEWER_ROLE")
 	s.reviewer.ReviewAuthorizationRef = getenv("ATG_DEVELOPMENT_REVIEW_AUTHORIZATION_REF")
+	s.reviewer.ReviewGateMode = getenv("ATG_GENERATION_REVIEW_GATE_MODE")
 	if !httpapi.ValidDevelopmentReviewer(s.reviewer) {
-		return s, fmt.Errorf("model mode requires a configured reviewer identity, developer/reviewer role, and authorization reference")
+		return s, fmt.Errorf("model mode requires a configured reviewer identity, developer/reviewer role, authorization reference, and a manual or automatic review gate mode")
 	}
 	s.attempts = 2
 	if raw := getenv("ATG_GENERATION_MAX_ATTEMPTS"); raw != "" {

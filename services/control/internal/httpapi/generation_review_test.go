@@ -17,6 +17,25 @@ import (
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgenflow"
 )
 
+func TestValidDevelopmentReviewerBindsReviewGateMode(t *testing.T) {
+	valid := func() TestGenerationDevelopmentConfig {
+		return TestGenerationDevelopmentConfig{InputMode: testgenflow.InputModeModelGeneration, ReviewerID: "unit-reviewer", ReviewerRole: "reviewer", ReviewAuthorizationRef: "authz://unit"}
+	}
+	for mode, ok := range map[string]bool{"": true, "manual": true, "automatic": true, "sometimes": false, "AUTO": false} {
+		config := valid()
+		config.ReviewGateMode = mode
+		if ValidDevelopmentReviewer(config) != ok {
+			t.Fatalf("gate mode %q validity = %t", mode, !ok)
+		}
+	}
+	artifact := valid()
+	artifact.InputMode = testgenflow.InputModeArtifactInput
+	artifact.ReviewGateMode = "automatic"
+	if ValidDevelopmentReviewer(artifact) {
+		t.Fatal("automatic gate accepted outside model generation mode")
+	}
+}
+
 func TestGenerationReviewCreateUsesServerPolicyAndRequiresAuthentication(t *testing.T) {
 	f := newGenerationReviewTestAPI(t)
 	for _, token := range []string{"", "incorrect-token"} {

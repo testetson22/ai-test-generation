@@ -49,6 +49,7 @@ type GenerationReview struct {
 	Rationale                  string    `json:"rationale"`
 	ExpectedTestIDs            []string  `json:"expected_test_ids,omitempty"`
 	ApprovedTestArtifactDigest string    `json:"approved_test_artifact_digest,omitempty"`
+	DecisionMode               string    `json:"decision_mode,omitempty"`
 	DecidedAt                  time.Time `json:"decided_at"`
 }
 
@@ -101,6 +102,9 @@ func (c GenerationCheckpoint) Validate(run Run) error {
 func (r GenerationReview) Validate() error {
 	if !validFlowIdent(r.DecisionID) || !validFlowIdent(r.CheckpointID) || r.Attempt < 1 || r.Stage != "plan" && r.Stage != "code" || !sha256Pattern.MatchString(r.ArtifactRef) || r.Action != "approve" && r.Action != "reject" || r.DecidedAt.IsZero() {
 		return fmt.Errorf("%w: review identity, scope, action, or time is invalid", ErrInvalidEvent)
+	}
+	if r.DecisionMode != "" && r.DecisionMode != "manual" && r.DecisionMode != "automatic" {
+		return fmt.Errorf("%w: review decision mode must be manual or automatic", ErrInvalidEvent)
 	}
 	if strings.TrimSpace(r.ReviewerID) == "" || strings.TrimSpace(r.ReviewerID) != r.ReviewerID || len(r.ReviewerID) > 256 || strings.IndexFunc(r.ReviewerID, unicode.IsControl) >= 0 || !utf8.ValidString(r.ReviewerID) || r.ReviewerRole != "reviewer" && r.ReviewerRole != "developer" || strings.TrimSpace(r.AuthorizationRef) == "" || len(r.AuthorizationRef) > 2048 || strings.IndexFunc(r.AuthorizationRef, unicode.IsControl) >= 0 || !utf8.ValidString(r.AuthorizationRef) {
 		return fmt.Errorf("%w: an attributable authorized reviewer or developer is required", ErrInvalidEvent)

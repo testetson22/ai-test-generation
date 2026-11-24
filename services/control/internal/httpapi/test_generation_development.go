@@ -35,6 +35,7 @@ type TestGenerationDevelopmentConfig struct {
 	ReviewerID             string
 	ReviewerRole           string
 	ReviewAuthorizationRef string
+	ReviewGateMode         string
 	Now                    func() time.Time
 }
 

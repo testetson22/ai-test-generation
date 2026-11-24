@@ -4,11 +4,14 @@ package localservice
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -267,6 +270,9 @@ func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
 			coordinator.Generation = workers
 		}
 		_, err = coordinator.Advance(workCtx, run.RunID)
+		if err == nil {
+			err = s.decideAutomaticReview(workCtx, *claim, run.RunID)
+		}
 	}
 	close(heartbeatStop)
 	cancel()
@@ -283,6 +289,84 @@ func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
 type claimedRepository struct {
 	Repository
 	claim testgenflow.FlowClaim
+}
+
+// decideAutomaticReview applies the configured automatic review gate to a run
+// paused at a checkpoint. Automatic decisions carry full attribution and a
+// decision_mode marker so the audit trail distinguishes them from human
+// reviews; the decision identity and time derive deterministically from the
+// checkpoint so retries replay the same event. Only structurally validated
+// stages ever reach a checkpoint, so the gate approves what independent
+// validation already admitted.
+func (s *Service) decideAutomaticReview(ctx context.Context, claim testgenflow.FlowClaim, runID string) error {
+	if s.config.API.ReviewGateMode != "automatic" {
+		return nil
+	}
+	run, err := s.config.Repository.GetRun(ctx, runID)
+	if err != nil || run.Status != testgenflow.StatusWaitingReview || run.Checkpoint == nil {
+		return err
+	}
+	checkpoint := *run.Checkpoint
+	decision := testgenflow.GenerationReview{
+		DecisionID:   "automatic-review:" + strings.TrimPrefix(checkpoint.ID, "sha256:"),
+		CheckpointID: checkpoint.ID, Stage: checkpoint.Stage, ArtifactRef: checkpoint.ArtifactRef,
+		Attempt: checkpoint.Attempt, Action: "approve",
+		ReviewerID: s.config.API.ReviewerID, ReviewerRole: s.config.API.ReviewerRole,
+		AuthorizationRef: s.config.API.ReviewAuthorizationRef, DecisionMode: "automatic",
+		Rationale: "automatic review gate: the stage output passed independent structural validation (protocol-validated paths, test identifiers, declared oracles, and scenario accounting); approved under the configured automatic review policy",
+		DecidedAt: run.UpdatedAt,
+	}
+	if checkpoint.Stage == "code" {
+		ids, err := s.suggestedTestIDs(ctx, checkpoint.ArtifactRef)
+		if err != nil {
+			return err
+		}
+		decision.ExpectedTestIDs = ids
+		approved, err := s.approveGeneratedCode(ctx, checkpoint.ArtifactRef, ids)
+		if err != nil {
+			return err
+		}
+		decision.ApprovedTestArtifactDigest = approved
+	}
+	sum := sha256.Sum256([]byte(decision.DecisionID))
+	_, err = s.config.Repository.ApplyClaimedTestGenerationEvent(ctx, claim, testgenflow.Event{
+		ID: "generation-review:" + hex.EncodeToString(sum[:]), ExpectedRevision: run.Revision,
+		Type: testgenflow.EventGenerationReviewDecided, OccurredAt: decision.DecidedAt, Review: &decision,
+	})
+	if err != nil && (errors.Is(err, testgenflow.ErrRevisionConflict) || errors.Is(err, testgenflow.ErrEventConflict)) {
+		return nil
+	}
+	return err
+}
+
+// suggestedTestIDs reads the code stage result's non-authoritative suggested
+// test identifiers. The stage output was already protocol-validated by the
+// generation worker and is re-validated against the materialized artifact by
+// the code-approval path.
+func (s *Service) suggestedTestIDs(ctx context.Context, stageRef string) ([]string, error) {
+	stageRaw, err := s.config.Artifacts.Get(ctx, stageRef, httpapi.MaxDevelopmentArtifactBytes)
+	if err != nil {
+		return nil, err
+	}
+	var stage struct {
+		ResultRef string `json:"result_ref"`
+	}
+	if json.Unmarshal(stageRaw, &stage) != nil || stage.ResultRef == "" {
+		return nil, errors.New("code stage evidence lacks a result reference")
+	}
+	resultRaw, err := s.config.Artifacts.Get(ctx, stage.ResultRef, httpapi.MaxDevelopmentArtifactBytes)
+	if err != nil {
+		return nil, err
+	}
+	var output struct {
+		Output struct {
+			SuggestedTestIDs []string `json:"suggested_test_ids"`
+		} `json:"output"`
+	}
+	if json.Unmarshal(resultRaw, &output) != nil || len(output.Output.SuggestedTestIDs) == 0 {
+		return nil, errors.New("code stage result lacks suggested test identifiers")
+	}
+	return output.Output.SuggestedTestIDs, nil
 }
 
 func (r *claimedRepository) ApplyEvent(ctx context.Context, runID string, event testgenflow.Event) (testgenflow.Run, error) {
