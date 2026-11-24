@@ -79,7 +79,7 @@ offline-validated only; it does not change that default.
 Required settings are `ATG_DATABASE_URL`, `ATG_ARTIFACT_ROOT`,
 `ATG_LOCAL_PROFILE`, and `ATG_DEVELOPMENT_BEARER_TOKEN` (at least 24 characters).
 `ATG_LOCAL_ENGINE` defaults to `podman`; `ATG_LOCAL_IMAGE` defaults to
-`localhost/atg-java17-maven:local`. `ATG_LISTEN_ADDR` must contain a literal
+`localhost/atg-java17-maven-v3:local`. `ATG_LISTEN_ADDR` must contain a literal
 loopback IP. The current local adapter requires a rootless Linux Podman runtime
 with cgroup v2; macOS requires its Linux VM. Docker can build/run the same image
 recipe, but is not yet a supported control-service engine adapter.
@@ -105,13 +105,19 @@ The authenticated development endpoints are:
   operation identities, states, and retained-result references.
 - `POST /development/test-generation-runs/{runID}/cancel`: revision-checked
   cancellation with `expected_revision` and `Idempotency-Key`.
+- `POST /development/test-generation-runs/{runID}/reconcile`: revision-checked
+  recovery of a verified, completed Plan receipt after an unknown completion
+  acknowledgement; this endpoint never starts or resubmits a model worker.
 - `GET /development/artifacts/{digest}`: bounded, digest-verified artifact bytes.
 
-`internal/localservice` drives only the configured artifact-input/patch-only
-runs, using fenced PostgreSQL claims and a write-ahead operation journal. Worker
-names derive from durable operation keys. Restart reconciles existing workers;
-missing workers after an ambiguous submission produce `outcome_unknown`, not an
-automatic replacement. A supplied artifact is never recorded as a model attempt.
+`internal/localservice` drives configured patch-only runs using fenced PostgreSQL
+claims and a write-ahead operation journal. Worker names derive from durable
+operation keys. Restart reconciles existing workers; missing workers after an
+ambiguous submission produce `outcome_unknown`, not an automatic replacement.
+The explicit Plan-recovery path is narrower: it requires a stopped worker with a
+valid completed receipt bound to the original operation input before reopening
+the human review checkpoint. A supplied artifact is never recorded as a model
+attempt.
 
 Each source/Maven operation has a fresh bounded tmpfs checkout/cache, nonroot
 UID, read-only root, dropped capabilities, CPU/memory/PID/file-size/deadline
@@ -186,13 +192,17 @@ verified failure-log context. Go alone authorizes retries. Cancellation and fina
 cleanup reconcile both worker roles; a missing ambiguous job cannot trigger a
 replacement model call. Historical failed observations remain retained.
 
-Pydantic AI has a gated live adapter, validated only with SDK-free/fake-transport
-tests so far. **Live Aider remains blocked** because its hard request/token and
-shell/tool controls are unverified. Its protocol/package variant and process
-seam exist, but neither installing Aider nor setting the model flag bypasses the
-block. Readiness rejects unsupported/co-installed harness configurations.
+Pydantic AI 2.68.0 is installed from the Python 3.12 hash lock in the local
+generation image. SDK imports, a network-disabled mock request, `pip check`, and
+the exact rootless resource-limited worker probe pass without enabling real model
+calls. Migration
+`0005_generation_reviews.sql` is applied to the fresh disposable development
+database, and focused PostgreSQL migration/restart tests pass. The running
+service remains in artifact-input mode with `live_generation=false`.
 
-Image builds, SDK installation/compatibility, real model calls, migration
-`0005_generation_reviews.sql`, and real generation-to-Maven validation remain
-external-operation gates. They were not performed during this offline pass.
-The previously running artifact-input service was not restarted or changed.
+No EnMaaS request or source checkout has been made from this generation path. The
+credential-file setting, task-specific policy/context, provider request behavior,
+reasoning parameter mapping, and usage/spend budget still need explicit setup.
+**Live Aider remains blocked** because its hard request/token and shell/tool
+controls are unverified. Its package branch does not bypass the worker's live
+block, and readiness rejects unsupported/co-installed harness configurations.

@@ -8,10 +8,11 @@ Prerequisite satisfied locally: FLPATH-5046 approved, digest-bound plan checkpoi
 
 ## 1. Ticket Intent (paste-ready replacement)
 
-> Generate repository-native test changes only from an approved plan and objective set. Model or tool output is untrusted. Validate generated tests through bounded syntax, format, compile, collection, assertion-quality, and approved-path checks, and preserve exact patch and materialized-test provenance.
+> Generate repository-native unit-test changes only from an approved plan and objective set. Model or tool output is untrusted. Validate generated tests through bounded syntax, format, compile, collection, assertion-quality, and approved-path checks, and preserve exact patch and materialized-test provenance.
 
 Acceptance (verbatim):
 - Generation requires an approved, digest-bound plan checkpoint.
+- MVP target-test generation and execution are limited to unit tests; integration, functional, and end-to-end tests are out of scope.
 - Only approved repository paths may change.
 - Repair attempts are bounded and every attempt is attributable to its input, tool, model, worker, and output digest.
 - Tests with no collection, no meaningful assertion, weakened assertions, or wrong targets fail quality validation.
@@ -33,9 +34,34 @@ Owned here:
 - `contracts/failure-register/v1/cases.json` - new FR-GEN-* cases
 
 Not owned here (explicit non-goals):
-- VEX/policy parsing (FLPATH-5017), Java fixture/profile/analyzer producer (FLPATH-4995/5012/5002), execution provider (FLPATH-5048), differential/quality classifier (FLPATH-5049), harness evaluation (FLPATH-5050)
+- VEX/policy parsing (FLPATH-5017), Java fixture/profile/analyzer producer (FLPATH-4995/5012/5002), base/candidate test execution (FLPATH-5048), differential quality classifier (FLPATH-5049), harness evaluation (FLPATH-5050)
 - Live LLM, Tekton, signing, evidence-store - fakes only; real integration is `tests/integration/`
 - Production auth - reuse existing `Idempotency-Key` + `validate_identifier` pattern; no new auth model
+
+### MVP Target-Test Level
+
+The unit-test-only boundary applies to tests generated for the target repository
+and to their MVP execution profile. It does not prohibit unit, component, or
+integration tests of ATG itself. Generated target tests may use in-process
+mocks/fakes. A test-local HTTP mock may be used as a dependency double only when
+the approved profile permits loopback sockets; bind it to `127.0.0.1` on an
+ephemeral port, use bounded fixed responses, and ensure requests cannot reach
+external hosts. Such a mock does not permit a booted target application,
+database, container, or real network service. If the profile forbids sockets,
+use an in-process resolver/test seam instead. If a security behavior cannot be
+tested within these unit-test constraints, preserve it as `inconclusive` or
+`blocked`; do not silently broaden the profile to an integration test.
+
+Plans are not bound by this limit: a plan may prescribe scenarios at any test
+level (unit, integration, functional, end-to-end) so the reviewed test plan can
+be robust even when execution is narrower. Plan scenarios may also declare
+structured `expected_outcomes` per subject (base/candidate: pass, fail, or any)
+as the oracle for later differential execution. Code generation is bound by the
+execution profile: it implements only unit-level scenarios and must account for
+every planned scenario either with a generated unit test at the planned path or
+an explicit `unimplemented_scenarios` entry naming the scenario and reason.
+Non-unit prescriptions are preserved as explicit gaps, never silently dropped
+or promoted.
 
 ## 3. Contracts
 
@@ -91,7 +117,7 @@ All deterministic, no model override:
 
 2. **Patch provenance**: `patch_digest = sha256(exact UTF-8 patch bytes)`. Patch headers must exactly match persisted materialized file paths. Patch bytes and materialized file contents are stored as content-addressed artifacts and recomputed on read (row/bundle mismatch -> `ContractValidationError`).
 
-3. **Syntax/format/compile/collection**: delegated to `ValidationPort.validate(candidate)`. The default local adapter can parse and compile Python source and check basic formatting; it does not claim framework collection, Java parsing, or compilation. Unsupported checks are `not_supported`, producing an explicit `inconclusive` result. A profile-backed adapter supplied after the 5050/fixture decisions must provide real format, compile, and collection checks for the target framework; test-runner execution remains 5048.
+3. **Syntax/format/compile/collection**: delegated to `ValidationPort.validate(candidate)`. The default local adapter can parse and compile Python source and check basic formatting; it does not claim framework collection, Java parsing, or compilation. Unsupported checks are `not_supported`, producing an explicit `inconclusive` result. A profile-backed adapter supplied after the 5050/fixture decisions must provide real format, compile, and collection checks for the target framework; MVP test-runner execution remains unit-only under 5048.
 
 4. **Assertion-quality gate** (`src/atg/gates/generation.py`):
     - Collector reports zero tests -> `rejected: no tests collected`; no configured collector -> `inconclusive`
@@ -174,6 +200,9 @@ Checkpoint decision flow unchanged; generation is NOT a checkpoint itself. `code
 
 ## 9. Test plan (local, no cluster/model/execution needed)
 
+The tests below validate ATG's own domain, service, and component behavior; they
+do not expand the unit-test-only boundary for generated target tests.
+
 Unit (`tests/unit/`):
 - `test_generation.py` - duplicate idempotency, conflict on different patch, approved-plan guard, digest mismatch, stale revision
 - `test_generation_gates.py` - allowed-path, traversal, no-collection, no-assert, weakened assertion, wrong target
@@ -249,8 +278,9 @@ Java/framework checks inconclusive rather than inventing a profile.
 The evaluation should record candidate name/version/configuration/endpoint,
 commands, observations, limitations, security/licensing/ownership findings,
 and recommendation; it must not silently make the exercised provider a runtime
-dependency. 5048 consumes the versioned generated artifacts and materialization
-manifest, while 5049 evaluates execution evidence and quality outcomes.
+dependency. 5048 executes the versioned test artifact against immutable
+base/candidate subjects and retains their execution evidence; 5049 evaluates the
+differential quality outcome.
 
 ## 12. Non-breaking change safety
 

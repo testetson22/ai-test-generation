@@ -184,6 +184,50 @@ resolved dependency inventory, and immutable source/profile/worker identities.
 The measured 121-test inventory is evidence for this source/worker run, not a
 general profile oracle; validate the selected suites under any adopted worker.
 
+## MVP Target-Test-Level Decision
+
+For the first ATG MVP, tests generated for a target repository and executed by
+its profile are **unit tests only**. This boundary is about target tests; it does
+not limit ATG's own unit, component, or integration test suites.
+
+An MVP target-test profile must select an explicit, reviewable set of unit-test
+IDs and retain the executed IDs and results. It must not use a broad command such
+as `mvn package` as proof of unit-only execution when that command also selects
+integration tests. Class names alone do not establish test level: profile review
+must account for test annotations, application startup, and external fixtures.
+Tests that boot the application, use a database/container, call a real or
+separately deployed service, or otherwise require an external system are outside
+this MVP scope.
+
+In-process mocks and fakes are allowed. A test-local HTTP mock may be used as a
+unit-test double only when the approved profile permits loopback sockets: bind
+to `127.0.0.1` on an ephemeral port, return bounded fixed responses, and prevent
+off-host requests. It does not authorize calling `example.invalid`, public
+services, or a separately deployed application. For parser or external-entity
+behavior, prefer an in-process resolver/test seam when available. If the target
+offers no safe unit-level seam or the expected behavior is not specified, report
+the result as `inconclusive` or `blocked` rather than promoting the test to an
+integration level.
+
+The retained 125-test local baseline for the newer sample revision includes
+integration tests. It remains useful development evidence, but it does not meet
+this MVP unit-only profile requirement and must not be presented as doing so.
+
+The local Maven worker's unit profile records `test_network_mode` as part of its
+immutable profile digest. `offline` is the default: source checkout, pinned
+Maven dependency/plugin-resolution goals, and the profile's pinned Surefire
+provider are prepared in the bounded worker with its development egress.
+Selected methods then run with Maven offline inside a nested user/network
+namespace. Readiness verifies that the namespace exposes no
+interface other than loopback and fails closed if it cannot create that
+namespace. `online` is an explicit development-only alternative whose changed
+profile digest records that target tests were allowed egress; it is not evidence
+of the no-egress MVP boundary. The current offline profile does not enable
+loopback sockets; use an in-process seam or preserve an explicit gap when a test
+requires one. The rootless OCI readiness probe and pinned seven-method unit
+baseline both pass in offline mode; no generated tests or CVE-specific inputs
+were used in that validation.
+
 Maven settings are not part of the public application source and the README
 documents Lightwell repository credentials. The existing cluster Artifactory is
 the dependency-mirror candidate; do not provision another mirror unless its
@@ -206,44 +250,77 @@ such tests exist at the pinned SHA. If a later target revision adds endpoint
 tests, its app lifecycle, credentials, isolation, and reset/cleanup policy need
 separate approval.
 
-### Test-Generation Modularity-Proof Scope
+### Differential Execution Scope And Demo Stretch Goal
 
-The current objective is to replace the legacy demo's test-generation step with an
-ATG integration that demonstrates the modular design. This is development
-integration work, not an attempt to satisfy the VPE-driven MVP. VPE context and
-its delivery contract are still in active development; their absence does not
-block this proof, and this repository must not invent their schema.
+The committed objective for FLPATH-5048 is profile-driven differential test
+execution: run the same approved/generated test artifact against immutable base
+and candidate subjects, retain attributable results for both, and support CVE
+fix validation. A same-tree generation-and-execution run validates plumbing only;
+it does not establish that a CVE is present on the base or fixed on the candidate.
+VPE context and its delivery contract are still in active development. Their
+absence does not block development of the execution pair, and this repository
+must not invent their schema.
 
-The proof should keep the existing demo flow as the host while routing test
-generation and execution through explicit ATG boundaries: the demo adapter
-translates the demo request/results, the controller owns target-independent
-lifecycle, the Java 17/Spring profile owns Maven commands and test/report
-conventions, and the provider/worker executes that profile. Existing development
-credentials are permitted for this work. The demo should preserve its expected
-test artifact and result handoff without placing demo-specific behavior in the
-controller or treating the local playground as a runtime dependency.
+The execution path should keep target-independent lifecycle in the controller,
+Maven commands and report conventions in a versioned profile, and subject
+materialization/execution behind provider and worker boundaries. Pair execution
+must use the same approved test artifact and compatible profile for both
+immutable subjects, keep workspaces isolated, and bind each result to its exact
+source, profile, worker, command, and test identities. The controller owns pair
+identity and lifecycle; FLPATH-5049 owns differential quality interpretation.
 
-Success means the legacy demo can invoke the replacement path for the pinned
-application, produce or accept generated tests, execute the selected Maven test
-flow through the profile/provider seams, and return attributable test results.
-A same-tree run proves integration compatibility only; do not describe it as a
-VPE-policy result, a base/candidate differential, or fix validation.
+Differential execution is implemented in the local Maven worker as a
+revision-based pair. A v1.0.7 profile pins an `execution_pair`: the base commit
+(the profile's pinned revision) and a distinct candidate commit of the same
+repository. `focused_tests` and `verify` dispatch one isolated container per
+subject with subject-suffixed idempotency keys and a subject label; each
+subject's evidence binds its own commit, and a pair document retains both
+subjects' outcomes plus a `differential_observed` flag. Phase success binds to
+the candidate subject: a base failure with candidate success is a successful
+differential observation, while a candidate failure fails the phase and can
+enter the existing repair loop. `package`/baseline and source resolution remain
+single-subject on the base revision. The shipped
+`workers/java17-maven/profile-unit-pair-online.json` is a machinery-validation
+pair of two real upstream revisions (the candidate is the older imported
+revision, not a fix); a CVE-fix run replaces the candidate with the fixed
+revision (for example, a Woodstox upgrade to a patched version) while keeping
+the same profile rules.
 
-For this development proof, the selected composition is the Go control
-component with Tekton-backed workers. Keep Tekton objects and API details behind
-the provider boundary because the active responsibility spike may refine that
-seam. The existing Python `GenerationService` remains the reference, not the
-production generator; the full path still needs a model-backed generation worker
-and an explicit handoff into the Go-controlled test execution. Align the local
-demo integration with the original flow before deployment. No cluster
-deployment or teardown is part of this implementation step.
+A successful pair is also checked against the approved plan's declared
+`expected_outcomes`: if a subject the plan declared to fail actually passed,
+the focused observation fails with a non-discrimination diagnostic and enters
+the repair loop instead of terminating the run. Repair feedback for pair
+documents retains both subjects' outcomes, their commits, the base subject's
+command log, and the prior candidate, so the next attempt can revise the input
+mechanism. Declared-outcome parsing is best-effort and can only fail an
+attempt, never pass one; the plan output that declares the oracle was already
+human-approved at its review checkpoint.
 
-The VPE/VEX input contract, policy conformance, durable Analyze/Plan review,
-immutable base/candidate differential execution, and owner-reviewed signed
-evidence belong to the later MVP integration. They are future extensions, not
-gates for this modularity proof. The execution profile, worker limits, selected
-test command, and evidence handoff still need to be made concrete for the demo
-run, but they do not need the full MVP approval framework.
+The primary 5048 success criterion is a real base/candidate run with attributable
+execution evidence sufficient to establish the observed test outcomes on both
+subjects. For CVE validation, the CVE-relevant test must demonstrate the expected
+base/candidate distinction under an approved oracle; do not infer a fix from
+candidate-only success. Integration with the existing demo is an optional stretch
+goal if time permits, not a 5048 completion gate or a commitment to modify that
+repository.
+
+For the local development path, use the Go control component with the local
+profile-driven worker while keeping provider APIs behind the provider boundary.
+Tekton remains a candidate, not a selected or wired production provider; keep
+its objects and API details behind that seam. The existing Python
+`GenerationService` remains a reference, not the production generator. Calling
+this path from the legacy demo and adapting its request/result handoff is an
+optional stretch goal if time permits, not a prerequisite for 5048 completion.
+Cluster deployment or teardown is not part of the local differential-execution
+proof.
+
+The VPE/VEX input contract and policy conformance remain upstream work under
+FLPATH-5017; consume that published contract when confirmed and do not duplicate
+it here. Durable Analyze/Plan review and owner-reviewed signed evidence may be
+separate MVP integration gates, but they do not defer 5048's base/candidate test
+execution requirement. Until VPE integration exists, development runs may use
+bounded user-supplied context or repository discovery, while clearly recording
+that no VPE policy was evaluated.
 
 ### Read-Only Cluster Snapshot (2026-11-18)
 
@@ -580,15 +657,21 @@ and bounded prior-candidate/verified-failure data. Final evidence preserves fail
 historical observations rather than requiring or pretending all attempts passed.
 Cancellation reconciles both worker roles and does not replace missing jobs.
 
-One `workers/generation/Containerfile` serves both local and eventual Tekton
-launchers. The Python base must be selected by digest; `.dockerignore` restricts
-the root build context to explicit module/entrypoint inputs. No images were
-built/pulled/pushed and no SDK packages installed. Migration
-`0005_generation_reviews.sql` and its live PostgreSQL tests were not applied/run.
-The existing artifact-input service was left untouched. No endpoint, credentials,
-SDK compatibility, model quality or live recovery result is inferred from the
-offline tests. The [verification gates](../../deploy/development-harness/README.md#generation-verification-gates)
-remain prerequisites to claiming a real generated-test service flow.
+One `workers/generation/Containerfile` serves local and potential future
+launchers. The Python base is digest-pinned at build time; `.dockerignore`
+restricts the root build context to explicit module/entrypoint inputs. Pydantic's
+Python 3.12 dependency lock is hash-checked. A bounded live Pydantic AI run,
+`testgen-run-29a863d0d481546b0cae6dc0ee766454`, completed Analyze, Plan, Code,
+review, materialization, focused Maven execution, and verification using
+repository discovery; seven baseline IDs plus the generated unit-test ID passed.
+This is same-tree generation/execution evidence only, not differential
+execution, VPE-policy evaluation, or CVE fix validation. The local online profile
+permits development egress and is not an approved production profile. The
+remaining 5048 execution milestone is an attributable base/candidate pair run;
+production object-storage/provider wiring and VPE integration remain separate
+deployment/upstream work. Demo integration remains optional stretch work. The
+[verification gates](../../deploy/development-harness/README.md#generation-verification-gates)
+still apply to any production claim.
 
 ## Reconsideration Conditions
 

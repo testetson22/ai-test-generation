@@ -17,6 +17,16 @@ the live cluster until the new demo is aligned and its environment is confirmed.
 
 ## Standalone Local Execution
 
+`deploy/development-harness/setup-local.sh` prepares the complete local
+environment in one command: postgres and GitLab via `compose.yaml`
+(loopback-only ports, named volumes), the Maven and generation worker images,
+and GitLab seeding with the differential pair subjects. The fix candidate
+commit is reproduced deterministically, so the pinned
+`profile-unit-pair-cve-online.json` candidate digest stays valid across fresh
+environments. The script is idempotent; it requires a podman machine with at
+least 8 GiB RAM and `podman-compose`. Set `ATG_SKIP_SEED=1` to skip seeding.
+The manual steps below remain the reference for each piece.
+
 The `local-development` service mode implements the first execution-only slice:
 real PostgreSQL admission/claims, pinned source checkout, a supplied test-only
 artifact, isolated Maven package/focused/verify operations, retained reports and
@@ -28,7 +38,7 @@ Opt-in staged generation is separately offline-validated; see
 Run commands from the repository root. Build the shared Java 17 worker locally:
 
 ```bash
-podman build --pull=missing -t localhost/atg-java17-maven:local \
+podman build --pull=missing -t localhost/atg-java17-maven-v3:local \
   -f workers/java17-maven/Containerfile workers/java17-maven
 make -C services/control build
 ```
@@ -38,7 +48,8 @@ execution. There is no local-specific image variant. No login/push is necessary;
 `quay.io/rh-ee-tstetson` is only an available development destination if remote
 distribution is later needed. Public base-image pulls are not publishing.
 Only the rootless Linux Podman engine adapter is implemented at present; on
-macOS this uses its Linux VM. Readiness probes actual cgroup/UID/image behavior.
+macOS this uses its Linux VM. Readiness probes actual cgroup/UID/image behavior
+and the offline profile's nested network namespace capability.
 
 Use an existing dedicated PostgreSQL 17 instance, or run the following in a
 separate foreground process with a persistent volume and matching locally chosen
@@ -61,12 +72,62 @@ export ATG_MODE=local-development
 export ATG_LISTEN_ADDR=127.0.0.1:18080
 export ATG_DATABASE_URL="postgres://atg:${ATG_LOCAL_DB_PASSWORD:?}@127.0.0.1:55432/atg?sslmode=disable"
 export ATG_ARTIFACT_ROOT="$PWD/.kilo/local-execution-artifacts"
-export ATG_LOCAL_PROFILE="$PWD/workers/java17-maven/profile.json"
+export ATG_LOCAL_PROFILE="$PWD/workers/java17-maven/profile-unit.json"
 export ATG_LOCAL_ENGINE=podman
-export ATG_LOCAL_IMAGE=localhost/atg-java17-maven:local
+export ATG_LOCAL_IMAGE=localhost/atg-java17-maven-v3:local
 export ATG_DEVELOPMENT_BEARER_TOKEN="$(openssl rand -hex 24)"
 services/control/bin/atg-control
 ```
+
+The default `profile-unit.json` runs target tests offline after dependency
+preparation. For approved local development runs that need test egress, select
+`workers/java17-maven/profile-unit-online.json`; its distinct profile digest
+records that tests can reach public endpoints. This mode does not restrict
+egress to an allowlist and should only be used with reviewed, bounded tests.
+
+For differential execution, select
+`workers/java17-maven/profile-unit-pair-online.json` (v1.0.7). It pins an
+immutable base/candidate commit pair; focused and verify phases execute one
+isolated container per subject and retain both outcomes plus a
+`differential_observed` flag in a pair document. Phase success binds to the
+candidate subject, so a base-failure/candidate-pass is recorded as a successful
+differential observation rather than a repair trigger. The shipped candidate is
+an older upstream revision used to validate the machinery, not a fix; point it
+at the fixed revision for CVE validation runs.
+
+For full differential CVE validation (CVE-2022-40152, Woodstox DTD parsing), a
+local GitLab mirrors the validated-pattern demo setup so no real remote is
+touched:
+
+1. The local GitLab runs as the `atg-gitlab` podman container (GitLab CE,
+   published on `127.0.0.1:8090`, volumes `atg-gitlab-*`, root password from
+   `GITLAB_ROOT_PASSWORD`). The application was imported into
+   `development/spring-boot-example-application`: branch `main` holds the
+   fixless base (Woodstox 6.0.3, in the advisory's affected range; it resolves
+   at compile scope so it is the runtime StAX provider for the statement import
+   path), and branch `fix-candidate` holds commit
+   `518440bd30e5a2b5760861e7709e83963461fe8f`, a one-line `pom.xml` bump of
+   `woodstox-core` to 6.4.0. Worker containers reach the instance as
+   `http://host.containers.internal:8090` (verified).
+2. Select `workers/java17-maven/profile-unit-pair-cve-online.json` (v1.0.8). It
+   pins the local GitLab remote and both immutable subjects; the profile digest
+   binds the remote, commits, and execution rules. v1.0.8 accepts
+   credential-free HTTPS remotes (a real fork) or host-local HTTP remotes
+   (`host.containers.internal`, `localhost`, `127.0.0.1`) only.
+   `profile-unit-pair-cve-online.json.example` is the template for the GitHub
+   fork variant; recreate the fix commit there and record your own SHA.
+3. Submit the CVE fix-pinning test objective through the same development API.
+   The objective should ask for the CVE-relevant test with declared
+   `expected_outcomes` (base fail, candidate pass) so the pair comparison checks
+   the declared oracle.
+4. Review the Plan and Code as usual. Focused and verify phases then execute
+   the same accepted test on both subjects; a failing base and passing
+   candidate yields `differential_observed: true`, which is the fix-validation
+   evidence. Both subjects' outcomes are retained with their commits.
+
+The podman machine was resized to 8 GiB to host GitLab alongside the Maven
+workloads. GitLab's local-only exposure is bound to loopback; its credentials
+are development conveniences, not production controls.
 
 Use the same development bearer token in a separate validation process; do not
 put it in committed configuration. Readiness at `/health/ready` identifies
@@ -92,14 +153,37 @@ Missing, skipped, failed, unexpected or duplicate tests cannot count as success.
 The cancellation scenario requires partial evidence from a real active worker,
 not merely cancellation of an empty queue entry.
 
-The development profile fixes source
-`01a18a1b40e151ffcc1d7bef86bf335f87999750` and an independent 121-test baseline
-inventory. Each operation uses a fresh checkout and Maven cache, no credentials,
-a nonroot UID, read-only root, 3Gi memory/2 CPU/256 PID limits, a 1536MiB workspace
-tmpfs, 64MiB temporary tmpfs, 512MiB file-size limit, and bounded command/retention
-deadlines. It permits public egress and resolves dependencies through Central;
-it does not claim an enforced allowlist or the Artifactory integration. Image
-identity and the exact loaded profile are bound in a retained dispatch artifact.
+The MVP unit profiles (`ssc-java17-maven` version `1.0.6`) fix current upstream
+source `83b6f931c08071133678284548ff19b13f6f8db0` and select only the seven
+`StatementImportServiceTest` unit-test IDs for baseline. Maven receives the exact
+`class#method` selectors. Focused and final phases select only declared generated
+method IDs plus that baseline inventory. `profile-unit.json` uses `offline` mode:
+source and Maven
+dependency/plugin resolution, including the pinned Surefire provider, use the
+bounded worker's development egress, then tests run with Maven offline in a
+loopback-only nested network namespace; readiness fails closed if the namespace
+is unavailable. `profile-unit-online.json` is the explicit development-only
+variant with a different digest and allows test egress; it does not meet the
+no-egress MVP boundary. The current offline profile does not
+enable loopback sockets. The rootless OCI readiness probe and pinned seven-method
+target baseline pass in offline mode. Each operation uses a fresh checkout and
+Maven cache, no credentials, a nonroot UID, read-only root, 3Gi memory/2 CPU/256 PID limits, a
+1536MiB workspace tmpfs, 64MiB temporary tmpfs, 512MiB file-size limit, and
+bounded command/retention deadlines. Neither mode claims an enforced allowlist or
+Artifactory integration for preparation egress. Image identity and the exact
+loaded profile are bound in a retained dispatch artifact.
+The version `1.0.2` profile retains the historical broad 125-test package suite
+and is not an MVP unit-only profile.
+Generation context is discovered from the pinned repository, not listed as
+source-file paths in the model policy or run request. The v1.0.6 execution
+profile selects Java production sources, conventionally named unit-test sources,
+and build metadata under explicit file-count and byte budgets. Analyze/Plan then
+choose relevant files from that immutable, digest-bound context. Requests may
+also carry an optional bounded opaque `context_input` (for example, user-supplied
+context); it is preserved and presented as untrusted supplemental data, without
+interpreting path references or claiming VPE schema validation. Repository
+discovery still runs when this field is absent or present. VPE contract mapping
+and reference validation remain pending FLPATH-5017 and its integration work.
 Local image IDs are not represented as published registry digests or production
 profile approvals. Further application profiles require explicit adapter/policy
 work, not caller-supplied commands or an automatic fallback to host Maven.
@@ -122,10 +206,11 @@ published evidence. The earlier cluster probe below remains separate evidence.
 
 ## Generation Verification Gates
 
-The next slices add Go-owned Analyze/Plan/Code operations, Plan/Code checkpoints,
-and a replaceable bounded worker protocol. This is code and offline fixture
-coverage, **not a completed live generation validation**. No new running service,
-migration, SDK environment or generation image was activated.
+Go-owned Analyze/Plan/Code operations, Plan/Code checkpoints, and a replaceable
+bounded worker protocol are implemented. A local Pydantic image is built and
+passes its isolated worker probe; a fresh disposable PostgreSQL database has
+migrations through `0005_generation_reviews.sql`. The running API remains in
+artifact-input mode, so this is **not a completed live generation validation**.
 
 Model mode requires both `ATG_LOCAL_INPUT_MODE=model_generation` and
 `ATG_ALLOW_MODEL_CALLS=true`, plus a policy, prebuilt local image, private key
@@ -162,29 +247,30 @@ authorization reference are configured server-side. Code approval additionally
 supplies independently confirmed `expected_test_ids`; neither suggested IDs nor
 a model's approval claim authorizes execution. No SCM publication is enabled.
 
-One generation recipe serves both platforms, not local/Tekton variants. Its
-Python base has no default: a verified digest must be explicitly selected. The
-root build context includes only module/entrypoint inputs. No dependency lock,
-SDK compatibility, usable image, or live reliability has been fabricated.
-Pydantic is prepared for a separately permitted probe; Aider stays blocked until
-its request/token and shell/tool controls can be verified.
+One generation recipe serves both local and eventual Tekton use. It has no
+default Python base; the local Pydantic build used the digest-pinned official
+Python 3.12 slim Bookworm index below. The Pydantic dependency lock is hashed and
+the strict root build context includes only declared module/entrypoint inputs.
+No image was published.
 
-Next **separately permitted** checks:
+```bash
+podman build --pull=never \
+  --build-arg PYTHON_BASE=docker.io/library/python@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df \
+  --build-arg HARNESS=pydantic_ai \
+  -t localhost/atg-generation-pydantic-v5:local \
+  -f workers/generation/Containerfile .
+```
 
-1. Select the Python base digest, resolve/lock dependencies, and build the shared
-   generation image locally. Publishing is unnecessary.
-2. Apply/test the review migration against real PostgreSQL and probe the real
-   OCI worker. Existing database/engine integrations were not invoked here.
-3. Configure real noncommitted credentials, endpoint/model budgets and reviewer
-   authorization, then explicitly enable model mode.
-4. Run one bounded Pydantic workflow through both human checkpoints and real
-   Maven, retaining usage, source/model/worker identities, XML and recovery data.
-5. Investigate Aider's unsupported controls before enabling its live backend,
-   then repeat the service-level scenario without changing lifecycle code.
-
-Until permitted, image/SDK operations, database changes, model calls, source
-checkouts and remote writes are stopped. Offline races, in-memory reviews,
-schemas and SDK-free tests validate interfaces and gating, not provider quality.
+The image's SDK imports, a network-disabled OpenAI-compatible mock request,
+dependency consistency, and isolated rootless OCI probe pass. A bounded live
+Pydantic AI run has also completed Analyze, Plan, Code, attributable review,
+materialization, focused Maven execution, and final verification using the
+repository-discovery context mode. It added one ordinary unit test; it did not
+exercise the CVE or any resource-exhaustion input. The online execution profile
+allows test egress, so generated code must still be reviewed before execution.
+Aider stays blocked until its request/token and shell/tool controls can be
+verified. One successful workflow validates integration plumbing, not model
+quality across repositories or security scenarios.
 
 ## Current Playground
 

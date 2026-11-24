@@ -43,16 +43,17 @@ Current component build inputs and validation:
 | Component | Native boundary | Verification state |
 |---|---|---|
 | `services/control/` | Own `go.mod`, native tests, build/package Makefile; public worker/profile fixtures are explicit test inputs | Artifact-input local flow has real PostgreSQL/OCI evidence; new model-generation flow has offline fixture coverage only |
-| `services/generation-worker/` | Own `pyproject.toml`, stdlib core/tests, separately pinned optional harness extras; no imports from reference or experiments | Pydantic adapter and common task protocol are offline-tested; live SDK integration and Aider controls are unverified |
+| `services/generation-worker/` | Own `pyproject.toml`, stdlib core/tests, separately pinned optional harness extras; no imports from reference or experiments | Pydantic 2.68.0 has a Python 3.12 hashed dependency lock; image imports, network-disabled SDK mock, dependency check, and isolated OCI probe pass. Provider calls and Aider controls remain unverified |
 | `workers/java17-maven/` | One image recipe, entrypoint and development workload profile | Local native ARM64 execution measured; not production profile approval |
-| `workers/generation/` | One harness-parameterized image recipe referencing the generation module; strict root build-context allowlist | Base digest selection, dependency resolution and image build remain explicit external-operation gates |
+| `workers/generation/` | One harness-parameterized image recipe referencing the generation module; strict root build-context allowlist | Pydantic image built locally from an explicit Python 3.12 index digest; Aider image and provider integration are not verified |
 
 From the repository root, SDK-free worker checks use
 `PYTHONPATH=services/generation-worker/src python3 -m unittest discover -s services/generation-worker/tests`.
 Its independently packageable core uses
 `python3 -m pip wheel --no-deps services/generation-worker`; that command can
-resolve build dependencies and was not run during the externally restricted
-implementation pass. Image builds and harness extras are separate from core
+resolve build dependencies. The Pydantic image build instead installs
+`requirements-pydantic.lock` with hashes, then builds the local package without
+dependency resolution. Image builds and harness extras are separate from core
 tests. Native CI covers the core wheel without installing model SDKs or calling
 providers; it does not silently build/publish a generation image.
 

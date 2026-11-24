@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: docker.io/library/postgres:17.6
+    container_name: atg-local-development-postgres
+    environment:
+      POSTGRES_USER: atg
+      POSTGRES_PASSWORD: atg-local-only
+      POSTGRES_DB: atg
+      PGDATA: /var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - atg-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atg -d atg"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+
+  gitlab:
+    image: docker.io/gitlab/gitlab-ce:latest
+    container_name: atg-gitlab
+    mem_limit: 6g
+    environment:
+      GITLAB_ROOT_PASSWORD: "${GITLAB_ROOT_PASSWORD:-Tr7-mKp2!vQz9-LocalDev}"
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://host.containers.internal:8090'
+        prometheus_monitoring['enable'] = false
+        puma['worker_processes'] = 2
+        sidekiq['max_concurrency'] = 5
+        registry['enable'] = false
+        gitlab_kas['enable'] = false
+        letsencrypt['enable'] = false
+        nginx['listen_port'] = 8090
+        nginx['listen_https'] = false
+    ports:
+      - "127.0.0.1:8090:8090"
+    volumes:
+      - atg-gitlab-config:/etc/gitlab
+      - atg-gitlab-logs:/var/log/gitlab
+      - atg-gitlab-data:/var/opt/gitlab
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8090/users/sign_in >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 40
+      start_period: 300s
+
+volumes:
+  atg-postgres-data:
+  atg-gitlab-config:
+  atg-gitlab-logs:
+  atg-gitlab-data:
