@@ -114,6 +114,7 @@ type Coordinator struct {
 	Maven         MavenProfileRunner
 	SCM           SCMWorker
 	Publisher     PatchPublisher
+	Artifacts     ArtifactReader
 	Now           func() time.Time
 }
 
@@ -297,6 +298,12 @@ func (c *Coordinator) runMaven(ctx context.Context, run Run, phase MavenPhase, e
 	result, err := c.Maven.RunMaven(ctx, MavenWorkRequest{WorkRequest: work, Phase: phase})
 	if err != nil {
 		return c.fail(ctx, run, workerFailure(err))
+	}
+	if phase == MavenPhaseFocusedTests && result.Succeeded && run.Request.InputMode == InputModeModelGeneration {
+		if diagnostic, mismatch := DifferentialOracleMismatch(ctx, c.Artifacts, run, MavenWorkRequest{WorkRequest: work, Phase: phase}, result); mismatch {
+			result.Succeeded = false
+			result.Diagnostic = diagnostic
+		}
 	}
 	if phase == MavenPhaseFocusedTests && !result.Succeeded && strings.TrimSpace(result.Diagnostic) == "" {
 		result.Diagnostic = "focused Maven test command failed"

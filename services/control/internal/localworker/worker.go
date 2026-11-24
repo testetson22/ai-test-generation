@@ -133,29 +133,13 @@ func (w *Worker) RunMaven(ctx context.Context, r testgenflow.MavenWorkRequest) (
 	return w.operation(ctx, r.WorkRequest, string(r.Phase), a, w.profile.primarySubject())
 }
 
-// SubjectOutcome records one immutable subject's execution outcome.
-type SubjectOutcome struct {
-	Subject     string `json:"subject"`
-	Commit      string `json:"commit"`
-	Succeeded   bool   `json:"succeeded"`
-	EvidenceRef string `json:"evidence_ref"`
-	Diagnostic  string `json:"diagnostic,omitempty"`
-}
+// SubjectOutcome records one immutable subject's execution outcome. The
+// provider-neutral contract type lives in testgenflow.
+type SubjectOutcome = testgenflow.SubjectOutcome
 
 // PairEvidence is the differential phase document: the same admitted test
 // artifact executed against both pinned subjects, with per-subject outcomes.
-type PairEvidence struct {
-	SchemaVersion        string           `json:"schema_version"`
-	Phase                string           `json:"phase"`
-	RunID                string           `json:"run_id"`
-	ProfileDigest        string           `json:"profile_digest"`
-	TestArtifactDigest   string           `json:"test_artifact_digest,omitempty"`
-	PatchDigest          string           `json:"patch_digest,omitempty"`
-	Subjects             []SubjectOutcome `json:"subjects"`
-	Succeeded            bool             `json:"succeeded"`
-	DifferentialObserved bool             `json:"differential_observed"`
-	Diagnostic           string           `json:"diagnostic,omitempty"`
-}
+type PairEvidence = testgenflow.PairEvidence
 
 // operationPair executes the same admitted test artifact against both pinned
 // subjects. The phase succeeds when the candidate subject succeeds; the base

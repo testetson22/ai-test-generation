@@ -339,42 +339,6 @@ func differentialOperationsFixture(t *testing.T) (*operations, *generationMemory
 	return &operations{service: service}, repo, store
 }
 
-func TestFocusedDifferentialOracleMismatchFailsNonDiscriminatingPair(t *testing.T) {
-	o, repo, store := differentialOperationsFixture(t)
-	profileDigest := "sha256:" + strings.Repeat("a", 64)
-	testPath := "src/test/java/example/CveTest.java"
-	artifactDigest := "sha256:" + strings.Repeat("b", 64)
-	planOut := fmt.Sprintf(`{"output":{"scenarios":[{"test_path":%q,"expected_outcomes":{"base":"fail","candidate":"pass"}}]}}`, testPath)
-	planRef := putRepairArtifact(t, store, []byte(planOut))
-	stageRef := putRepairArtifact(t, store, []byte(`{"result_ref":"`+planRef+`"}`))
-	subjects := []localworker.SubjectOutcome{
-		{Subject: "base", Commit: strings.Repeat("c", 40), Succeeded: true, EvidenceRef: "sha256:" + strings.Repeat("e", 64)},
-		{Subject: "candidate", Commit: strings.Repeat("d", 40), Succeeded: true, EvidenceRef: "sha256:" + strings.Repeat("f", 64)},
-	}
-	pair := localworker.PairEvidence{SchemaVersion: "1", Phase: "focused_tests", RunID: "run-1", ProfileDigest: profileDigest, TestArtifactDigest: artifactDigest, Subjects: subjects, Succeeded: true}
-	pairRef := putRepairArtifact(t, store, mustMarshal(t, pair))
-	run := testgenflow.Run{RunID: "run-1", Request: testgenflow.Request{ProfileDigest: profileDigest, InputMode: testgenflow.InputModeModelGeneration}, ChangedTestPaths: []string{testPath}, Reviews: []testgenflow.GenerationReview{{Stage: "plan", Action: "approve", Attempt: 1, ArtifactRef: stageRef}}}
-	repo.runs["run-1"] = run
-	work := testgenflow.MavenWorkRequest{WorkRequest: testgenflow.WorkRequest{RunID: "run-1", Attempt: 1, TestArtifactDigest: artifactDigest}, Phase: testgenflow.MavenPhaseFocusedTests}
-	result := testgenflow.MavenResult{Succeeded: true, EvidenceRef: pairRef}
-
-	diagnostic, mismatch := o.differentialOracleMismatch(context.Background(), work, result)
-	if !mismatch || !strings.Contains(diagnostic, "subject base was declared to fail but passed") || !strings.Contains(diagnostic, "does not discriminate") {
-		t.Fatalf("non-discriminating pair not failed: mismatch=%t diagnostic=%q", mismatch, diagnostic)
-	}
-
-	pair.Subjects[0].Succeeded = false
-	discriminating := testgenflow.MavenResult{Succeeded: true, EvidenceRef: putRepairArtifact(t, store, mustMarshal(t, pair))}
-	if _, mismatch = o.differentialOracleMismatch(context.Background(), work, discriminating); mismatch {
-		t.Fatal("discriminating pair was failed against its declared oracle")
-	}
-
-	repo.runs["run-1"] = testgenflow.Run{RunID: "run-1", Request: testgenflow.Request{ProfileDigest: profileDigest, InputMode: testgenflow.InputModeModelGeneration}, ChangedTestPaths: []string{testPath}}
-	if _, mismatch = o.differentialOracleMismatch(context.Background(), work, result); mismatch {
-		t.Fatal("pair without a declared oracle was failed")
-	}
-}
-
 func TestPairRepairFeedbackBindsSubjectsAndIncludesOutcomes(t *testing.T) {
 	o, repo, store := differentialOperationsFixture(t)
 	profileDigest := "sha256:" + strings.Repeat("a", 64)

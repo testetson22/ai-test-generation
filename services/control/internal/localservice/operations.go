@@ -7,13 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/artifact"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/httpapi"
-	"github.com/project-lightpath/ai-test-generation/services/control/internal/localworker"
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgenflow"
 )
 
@@ -132,12 +130,6 @@ func (o *operations) RunMaven(ctx context.Context, work testgenflow.MavenWorkReq
 		work.ReconcileOnly = work.ReconcileOnly || reconcile
 		return o.service.config.Worker.RunMaven(ctx, work)
 	}, &result)
-	if err == nil && result.Succeeded && work.Phase == testgenflow.MavenPhaseFocusedTests && work.Request.InputMode == testgenflow.InputModeModelGeneration {
-		if diagnostic, mismatch := o.differentialOracleMismatch(ctx, work, result); mismatch {
-			result.Succeeded = false
-			result.Diagnostic = diagnostic
-		}
-	}
 	if err == nil && !result.Succeeded {
 		run, readErr := o.service.config.Repository.GetRun(ctx, work.RunID)
 		if readErr != nil {
@@ -157,95 +149,6 @@ func (o *operations) RunMaven(ctx context.Context, work testgenflow.MavenWorkReq
 		}
 	}
 	return result, err
-}
-
-// differentialOracleMismatch compares a successful focused differential pair
-// against the approved plan's declared expected outcomes. A pair that did not
-// discriminate (a subject declared to fail actually passed) is a failed
-// observation, not a pass, so it enters the existing repair loop instead of
-// terminating the run. Absent or unreadable declared outcomes disable the
-// check; the mismatch direction can only fail an attempt, never pass one.
-func (o *operations) differentialOracleMismatch(ctx context.Context, work testgenflow.MavenWorkRequest, result testgenflow.MavenResult) (string, bool) {
-	run, err := o.service.config.Repository.GetRun(ctx, work.RunID)
-	if err != nil || len(run.ChangedTestPaths) == 0 {
-		return "", false
-	}
-	raw, err := o.service.config.Artifacts.Get(ctx, result.EvidenceRef, httpapi.MaxDevelopmentArtifactBytes)
-	if err != nil {
-		return "", false
-	}
-	var pair localworker.PairEvidence
-	if json.Unmarshal(raw, &pair) != nil || len(pair.Subjects) != 2 || pair.ProfileDigest != run.Request.ProfileDigest || pair.TestArtifactDigest != work.TestArtifactDigest {
-		return "", false
-	}
-	declared, err := o.declaredOutcomes(ctx, run, work.Attempt)
-	if err != nil || len(declared) == 0 {
-		return "", false
-	}
-	var mismatches []string
-	for _, subject := range pair.Subjects {
-		if declared[subject.Subject] == "fail" && subject.Succeeded {
-			mismatches = append(mismatches, fmt.Sprintf("subject %s was declared to fail but passed", subject.Subject))
-		}
-	}
-	if len(mismatches) == 0 {
-		return "", false
-	}
-	return "differential did not match the approved plan oracle: " + strings.Join(mismatches, "; ") + ". The test input does not discriminate between the pinned subjects; revise the input mechanism until the declared base/candidate outcomes are observed", true
-}
-
-// declaredOutcomes reads the approved plan's declared expected_outcomes for the
-// scenarios the admitted candidate implemented. Plan output is untrusted data:
-// it was human-approved, and here it can only require an observation to fail.
-func (o *operations) declaredOutcomes(ctx context.Context, run testgenflow.Run, attempt int) (map[string]string, error) {
-	planRef := ""
-	for i := len(run.Reviews) - 1; i >= 0; i-- {
-		review := run.Reviews[i]
-		if review.Stage == "plan" && review.Action == "approve" && review.Attempt == attempt {
-			planRef = review.ArtifactRef
-			break
-		}
-	}
-	if planRef == "" {
-		return nil, nil
-	}
-	stageRaw, err := o.service.config.Artifacts.Get(ctx, planRef, httpapi.MaxDevelopmentArtifactBytes)
-	if err != nil {
-		return nil, err
-	}
-	var stage struct {
-		ResultRef string `json:"result_ref"`
-	}
-	if json.Unmarshal(stageRaw, &stage) != nil || stage.ResultRef == "" {
-		return nil, nil
-	}
-	planRaw, err := o.service.config.Artifacts.Get(ctx, stage.ResultRef, httpapi.MaxDevelopmentArtifactBytes)
-	if err != nil {
-		return nil, err
-	}
-	var plan struct {
-		Output struct {
-			Scenarios []struct {
-				TestPath         string            `json:"test_path"`
-				ExpectedOutcomes map[string]string `json:"expected_outcomes"`
-			} `json:"scenarios"`
-		} `json:"output"`
-	}
-	if json.Unmarshal(planRaw, &plan) != nil {
-		return nil, nil
-	}
-	declared := map[string]string{}
-	for _, scenario := range plan.Output.Scenarios {
-		if !slices.Contains(run.ChangedTestPaths, scenario.TestPath) {
-			continue
-		}
-		for subject, expectation := range scenario.ExpectedOutcomes {
-			if expectation == "fail" {
-				declared[subject] = "fail"
-			}
-		}
-	}
-	return declared, nil
 }
 
 func (o *operations) PublishPatch(ctx context.Context, work testgenflow.WorkRequest) (string, error) {

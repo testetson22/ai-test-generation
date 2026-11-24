@@ -260,7 +260,8 @@ func (s *Service) DriveOnce(ctx context.Context) (bool, error) {
 		coordinator := testgenflow.Coordinator{
 			Repository: &claimedRepository{Repository: s.config.Repository, claim: *claim},
 			Source:     workers, ArtifactInput: workers, Maven: workers, Publisher: workers,
-			Now: s.now,
+			Artifacts: s.config.Artifacts,
+			Now:       s.now,
 		}
 		if s.config.Generation != nil {
 			coordinator.Generation = workers
