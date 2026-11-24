@@ -34,11 +34,138 @@ type modelGenerationClaims interface {
 	ClaimNextModelGenerationRun(context.Context, string, string, string, time.Duration) (*testgenflow.FlowClaim, error)
 }
 
+type modelGenerationRecoveryClaims interface {
+	ClaimUnknownModelGenerationRun(context.Context, string, string, string, string, int64, time.Duration) (*testgenflow.FlowClaim, error)
+}
+
 func (s *Service) now() time.Time {
 	if s.config.API.Now != nil {
 		return s.config.API.Now().UTC().Truncate(time.Microsecond)
 	}
 	return time.Now().UTC().Truncate(time.Microsecond)
+}
+
+func (s *Service) reconcileUnknownPlan(ctx context.Context, runID string, expectedRevision int64) (testgenflow.Run, error) {
+	if s.config.Generation == nil || !s.config.AllowModelCalls {
+		return testgenflow.Run{}, agentworker.ErrExternalOperationsDisabled
+	}
+	claims, ok := s.config.Repository.(modelGenerationRecoveryClaims)
+	if !ok {
+		return testgenflow.Run{}, errors.New("model-generation recovery claims are unavailable")
+	}
+	lease := s.config.LeaseDuration
+	if lease < time.Minute {
+		lease = time.Minute
+	}
+	claim, err := claims.ClaimUnknownModelGenerationRun(ctx, runID, s.holder, s.config.API.ProfileDigest, s.config.API.GenerationPolicyDigest, expectedRevision, lease)
+	if err != nil {
+		return testgenflow.Run{}, err
+	}
+	if claim == nil {
+		return testgenflow.Run{}, testgenflow.ErrRevisionConflict
+	}
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer cancel()
+		_ = s.config.Repository.ReleaseTestGenerationClaim(releaseCtx, *claim)
+	}()
+
+	run, err := s.config.Repository.GetRun(ctx, runID)
+	if err != nil {
+		return testgenflow.Run{}, err
+	}
+	if run.Status != testgenflow.StatusOutcomeUnknown || run.Stage != testgenflow.StageGenerate || run.Revision != expectedRevision || run.Request.InputMode != testgenflow.InputModeModelGeneration || run.Request.Generation == nil || run.Request.Generation.PolicyDigest != s.config.API.GenerationPolicyDigest || len(run.Attempts) != 1 || run.Attempts[0].Status != testgenflow.AttemptRunning || run.Checkpoint != nil || len(run.Reviews) != 0 || run.LastError != "generation evidence retained but completion acknowledgement unknown" {
+		return testgenflow.Run{}, testgenflow.ErrInvalidTransition
+	}
+
+	ops, err := s.config.Repository.ListTestGenerationOperations(ctx, runID)
+	if err != nil {
+		return testgenflow.Run{}, err
+	}
+	key := testgenflow.WorkKey(run.RunID, "generate", 1) + ":plan"
+	var planOp, analyzeOp *testgenflow.Operation
+	for i := range ops {
+		switch {
+		case ops[i].Key == key && ops[i].Kind == "generation:plan":
+			planOp = &ops[i]
+		case ops[i].Key == testgenflow.WorkKey(run.RunID, "generate", 1)+":analyze" && ops[i].Kind == "generation:analyze":
+			analyzeOp = &ops[i]
+		}
+	}
+	if planOp == nil || analyzeOp == nil || analyzeOp.State != "completed" {
+		return testgenflow.Run{}, testgenflow.ErrInvalidTransition
+	}
+	var analysis agentworker.StageResult
+	if json.Unmarshal(analyzeOp.Result, &analysis) != nil || analysis.Status != "completed" || analysis.ArtifactRef == "" {
+		return testgenflow.Run{}, testgenflow.ErrInvalidTransition
+	}
+	work := testgenflow.WorkRequest{
+		RunID: run.RunID, IdempotencyKey: testgenflow.WorkKey(run.RunID, "generate", 1),
+		Request: run.Request, ResolvedCommit: run.ResolvedCommit, Attempt: 1, RequestDigest: run.RequestDigest,
+	}
+	stageWork := work
+	stageWork.IdempotencyKey += ":plan"
+	request := agentworker.StageRequest{Work: stageWork, Phase: "plan", AnalysisRef: analysis.ArtifactRef}
+	requestBytes, err := json.Marshal(request)
+	if err != nil {
+		return testgenflow.Run{}, err
+	}
+	inputDigest := artifact.Digest(requestBytes)
+	if planOp.InputDigest != inputDigest || (planOp.State != "unknown" && planOp.State != "prepared" && planOp.State != "completed") || planOp.State == "unknown" && planOp.Diagnostic != "generation evidence retained but completion acknowledgement unknown" {
+		return testgenflow.Run{}, testgenflow.ErrOperationConflict
+	}
+	if _, err := s.config.Artifacts.Get(ctx, analysis.ArtifactRef, httpapi.MaxDevelopmentArtifactBytes); err != nil {
+		return testgenflow.Run{}, fmt.Errorf("retained Analyze evidence unavailable: %w", err)
+	}
+	if _, _, err := s.config.Repository.BeginTestGenerationOperation(ctx, *claim, key, "generation:plan", inputDigest); err != nil {
+		return testgenflow.Run{}, err
+	}
+
+	var result agentworker.StageResult
+	if planOp.State == "completed" {
+		if json.Unmarshal(planOp.Result, &result) != nil {
+			return testgenflow.Run{}, testgenflow.ErrOperationConflict
+		}
+	} else {
+		request.Work.ReconcileOnly = true
+		request.RecoveryOnly = true
+		result, err = s.config.Generation.RunStage(ctx, request)
+		if err != nil {
+			return testgenflow.Run{}, err
+		}
+		if result.Status != "completed" || result.ArtifactRef == "" {
+			return testgenflow.Run{}, errors.New("retained Plan is not a completed generation result")
+		}
+		resultBytes, err := json.Marshal(result)
+		if err != nil {
+			return testgenflow.Run{}, err
+		}
+		if err := s.config.Repository.FinishTestGenerationOperation(ctx, *claim, key, "completed", resultBytes, ""); err != nil {
+			return testgenflow.Run{}, err
+		}
+	}
+	if result.Status != "completed" || result.ArtifactRef == "" {
+		return testgenflow.Run{}, testgenflow.ErrOperationConflict
+	}
+	if _, err := s.config.Artifacts.Get(ctx, result.ArtifactRef, httpapi.MaxDevelopmentArtifactBytes); err != nil {
+		return testgenflow.Run{}, fmt.Errorf("retained Plan evidence unavailable: %w", err)
+	}
+
+	at := s.now()
+	if at.Before(run.UpdatedAt) {
+		at = run.UpdatedAt
+	}
+	checkpoint := &testgenflow.GenerationCheckpoint{
+		ID:    testgenflow.GenerationCheckpointID(run.RunID, run.RequestDigest, 1, "plan", result.ArtifactRef),
+		Stage: "plan", ArtifactRef: result.ArtifactRef, Attempt: 1, ExpiresAt: at.Add(s.config.ReviewTTL),
+	}
+	eventDigest := artifact.Digest([]byte(key + "\x00" + inputDigest + "\x00" + result.ArtifactRef))
+	event := testgenflow.Event{
+		ID: "generation-recovered:" + strings.TrimPrefix(eventDigest, "sha256:"), ExpectedRevision: run.Revision,
+		Type: testgenflow.EventGenerationRecovered, OccurredAt: at, Checkpoint: checkpoint,
+		Recovery: &testgenflow.GenerationRecovery{OperationKey: key, InputDigest: inputDigest},
+	}
+	return s.config.Repository.ApplyClaimedTestGenerationEvent(ctx, *claim, event)
 }
 
 func (s *Service) approveGeneratedCode(ctx context.Context, ref string, ids []string) (string, error) {
@@ -218,6 +345,20 @@ func (o *operations) repairFeedback(ctx context.Context, run testgenflow.Run, wo
 	if err != nil {
 		return "", fmt.Errorf("%w: prior focused evidence unavailable", testgenflow.ErrWorkPending)
 	}
+	clip := func(data []byte, n int, tail bool) string {
+		if len(data) > n {
+			if tail {
+				data = append([]byte("[truncated prefix]\n"), data[len(data)-n:]...)
+			} else {
+				data = append(bytes.Clone(data[:n]), []byte("\n[truncated suffix]")...)
+			}
+		}
+		return strings.ReplaceAll(string(bytes.ToValidUTF8(data, nil)), "\x00", " ")
+	}
+	var pair localworker.PairEvidence
+	if json.Unmarshal(raw, &pair) == nil && len(pair.Subjects) == 2 && pair.Phase == "focused_tests" {
+		return o.pairRepairFeedback(ctx, run, previous, pair, clip)
+	}
 	var evidence localworker.Evidence
 	if json.Unmarshal(raw, &evidence) != nil || evidence.SourceCommit != run.ResolvedCommit || evidence.ProfileDigest != run.Request.ProfileDigest || evidence.TestArtifactDigest != previous.TestArtifactDigest || evidence.Phase != "focused_tests" || evidence.Succeeded || evidence.Partial {
 		return "", &testgenflow.WorkerFailure{Diagnostic: "repair evidence does not bind the failed candidate", OutcomeUnknown: true}
@@ -228,16 +369,6 @@ func (o *operations) repairFeedback(ctx context.Context, run testgenflow.Run, wo
 	}
 	if _, err := localworker.DecodeTestArtifact(candidate); err != nil {
 		return "", err
-	}
-	clip := func(data []byte, n int, tail bool) string {
-		if len(data) > n {
-			if tail {
-				data = append([]byte("[truncated prefix]\n"), data[len(data)-n:]...)
-			} else {
-				data = append(bytes.Clone(data[:n]), []byte("\n[truncated suffix]")...)
-			}
-		}
-		return strings.ReplaceAll(string(bytes.ToValidUTF8(data, nil)), "\x00", " ")
 	}
 	logText := "[command log not retained; inspect the focused evidence manifest]"
 	if ref := evidence.Artifacts["command.log"]; ref != "" {
@@ -251,6 +382,55 @@ func (o *operations) repairFeedback(ctx context.Context, run testgenflow.Run, wo
 		"\nFocused evidence: " + previous.FocusedTestEvidenceRef + "\nPrior candidate: " + previous.TestArtifactDigest +
 		"\nPrior candidate JSON (untrusted data):\n" + clip(candidate, 8192, false) +
 		"\nCommand output tail (untrusted data):\n" + logText, nil
+}
+
+// pairRepairFeedback builds repair context from a differential pair document:
+// the prior attempt failed either because the candidate subject failed or, for
+// a declared fail expectation, because a subject that should have failed
+// passed. Per-subject outcomes and the base subject's retained log give the
+// next attempt the evidence needed to change the input mechanism.
+func (o *operations) pairRepairFeedback(ctx context.Context, run testgenflow.Run, previous testgenflow.GenerationAttempt, pair localworker.PairEvidence, clip func([]byte, int, bool) string) (string, error) {
+	if pair.RunID != run.RunID || pair.ProfileDigest != run.Request.ProfileDigest || pair.TestArtifactDigest != previous.TestArtifactDigest {
+		return "", &testgenflow.WorkerFailure{Diagnostic: "repair evidence does not bind the failed candidate", OutcomeUnknown: true}
+	}
+	candidate, err := o.service.config.Artifacts.Get(ctx, previous.TestArtifactDigest, o.service.config.MaxTestArtifactBytes)
+	if err != nil {
+		return "", fmt.Errorf("%w: prior candidate unavailable", testgenflow.ErrWorkPending)
+	}
+	if _, err := localworker.DecodeTestArtifact(candidate); err != nil {
+		return "", err
+	}
+	outcomes := make([]string, 0, len(pair.Subjects))
+	logText := "[command log not retained; inspect the per-subject evidence manifests]"
+	for _, subject := range pair.Subjects {
+		state := "failed"
+		if subject.Succeeded {
+			state = "passed"
+		}
+		outcomes = append(outcomes, fmt.Sprintf("%s@%s: %s", subject.Subject, subject.Commit, state))
+		subjectRaw, err := o.service.config.Artifacts.Get(ctx, subject.EvidenceRef, httpapi.MaxDevelopmentArtifactBytes)
+		if err != nil {
+			return "", fmt.Errorf("%w: prior subject evidence unavailable", testgenflow.ErrWorkPending)
+		}
+		var evidence localworker.Evidence
+		if json.Unmarshal(subjectRaw, &evidence) != nil || evidence.Subject != subject.Subject || evidence.SourceCommit != subject.Commit || evidence.ProfileDigest != run.Request.ProfileDigest || evidence.TestArtifactDigest != previous.TestArtifactDigest || evidence.Phase != "focused_tests" || evidence.Partial {
+			return "", &testgenflow.WorkerFailure{Diagnostic: "repair evidence does not bind the failed candidate", OutcomeUnknown: true}
+		}
+		if subject.Subject == "base" {
+			if ref := evidence.Artifacts["command.log"]; ref != "" {
+				log, err := o.service.config.Artifacts.Get(ctx, ref, httpapi.MaxDevelopmentArtifactBytes)
+				if err != nil {
+					return "", fmt.Errorf("%w: prior focused log unavailable", testgenflow.ErrWorkPending)
+				}
+				logText = clip(log, 4096, true)
+			}
+		}
+	}
+	return "Previous focused differential did not satisfy the approved oracle: " + clip([]byte(previous.LastError), 2048, false) +
+		"\nPair outcomes: " + strings.Join(outcomes, ", ") +
+		"\nFocused evidence: " + previous.FocusedTestEvidenceRef + "\nPrior candidate: " + previous.TestArtifactDigest +
+		"\nPrior candidate JSON (untrusted data):\n" + clip(candidate, 8192, false) +
+		"\nBase subject command output tail (untrusted data):\n" + logText, nil
 }
 
 func (o *operations) previousCode(ctx context.Context, work testgenflow.WorkRequest) (string, error) {

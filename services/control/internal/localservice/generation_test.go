@@ -250,6 +250,168 @@ func TestGenerationServiceLostPhaseFinishAcknowledgementReplaysWithoutNewModelJo
 	}
 }
 
+func TestGenerationServiceReconcilesUnknownCompletedPlanWithoutModelResubmission(t *testing.T) {
+	h := newGenerationServiceFixture(t, true)
+	h.model.unknownAfterComplete = "plan"
+	h.create(t)
+	for range 10 {
+		run := h.run(t)
+		if run.Status == testgenflow.StatusOutcomeUnknown {
+			break
+		}
+		worked, err := h.service.DriveOnce(t.Context())
+		if err != nil || !worked {
+			t.Fatalf("drive to unknown Plan result: worked=%t err=%v run=%#v", worked, err, run)
+		}
+	}
+	unknown := h.run(t)
+	if unknown.Status != testgenflow.StatusOutcomeUnknown || unknown.LastError != "generation evidence retained but completion acknowledgement unknown" {
+		t.Fatalf("fixture did not produce the intended unknown Plan outcome: %#v", unknown)
+	}
+	key := testgenflow.WorkKey(unknown.RunID, "generate", 1) + ":plan"
+	if operation := h.operation(t, key); operation.State != "unknown" {
+		t.Fatalf("Plan operation was not left unknown: %#v", operation)
+	}
+	providerRequests := func() int {
+		count := 0
+		for _, call := range h.model.calls {
+			if !call.RecoveryOnly {
+				count++
+			}
+		}
+		return count
+	}
+	if providerRequests() != 2 {
+		t.Fatalf("unexpected number of initial model requests: %#v", h.model.calls)
+	}
+	stale := h.request(http.MethodPost, "/development/test-generation-runs/"+unknown.RunID+"/reconcile", map[string]any{"expected_revision": unknown.Revision - 1})
+	if stale.Code != http.StatusConflict || !reflect.DeepEqual(h.run(t), unknown) || providerRequests() != 2 {
+		t.Fatalf("stale recovery changed run or contacted model: %d %s", stale.Code, stale.Body.String())
+	}
+	response := h.request(http.MethodPost, "/development/test-generation-runs/"+unknown.RunID+"/reconcile", map[string]any{"expected_revision": unknown.Revision})
+	var recovered httpapi.TestGenerationDevelopmentResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &recovered); err != nil || response.Code != http.StatusAccepted {
+		t.Fatalf("reconcile completed Plan: %d %s %v", response.Code, response.Body.String(), err)
+	}
+	checkpoint := recovered.Run
+	if checkpoint.Status != testgenflow.StatusWaitingReview || checkpoint.Revision != unknown.Revision+1 || checkpoint.Checkpoint == nil || checkpoint.Checkpoint.Stage != "plan" || checkpoint.Checkpoint.ArtifactRef != h.model.jobs[key].ArtifactRef || checkpoint.LastError != "" {
+		t.Fatalf("recovery did not reach the exact Plan review checkpoint: %#v", checkpoint)
+	}
+	if operation := h.operation(t, key); operation.State != "completed" {
+		t.Fatalf("recovered operation was not durably completed: %#v", operation)
+	}
+	if providerRequests() != 2 || len(h.model.calls) != 3 || !h.model.calls[2].RecoveryOnly || !h.model.calls[2].Work.ReconcileOnly || len(h.worker.maven) != 1 {
+		t.Fatalf("recovery resubmitted generation or launched later execution: calls=%#v Maven=%v", h.model.calls, h.worker.phases())
+	}
+	approved := h.review(t, checkpoint, "approve", nil)
+	if approved.Status != testgenflow.StatusRunning || approved.Checkpoint != nil || len(approved.Reviews) != 1 {
+		t.Fatalf("recovered Plan did not enter normal human review flow: %#v", approved)
+	}
+}
+
+func putRepairArtifact(t *testing.T, store *artifact.FileStore, data []byte) string {
+	t.Helper()
+	ref, err := store.Put(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref.Digest
+}
+
+func mustMarshal(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func differentialOperationsFixture(t *testing.T) (*operations, *generationMemoryRepository, *artifact.FileStore) {
+	t.Helper()
+	store, err := artifact.NewFileStore(t.TempDir(), 32<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	repo := &generationMemoryRepository{runs: map[string]testgenflow.Run{}, events: map[string]map[string]string{}, operations: map[string]map[string]testgenflow.Operation{}, claims: map[string]testgenflow.FlowClaim{}}
+	service := &Service{config: Config{Repository: repo, Artifacts: store, MaxTestArtifactBytes: 1 << 20}}
+	return &operations{service: service}, repo, store
+}
+
+func TestFocusedDifferentialOracleMismatchFailsNonDiscriminatingPair(t *testing.T) {
+	o, repo, store := differentialOperationsFixture(t)
+	profileDigest := "sha256:" + strings.Repeat("a", 64)
+	testPath := "src/test/java/example/CveTest.java"
+	artifactDigest := "sha256:" + strings.Repeat("b", 64)
+	planOut := fmt.Sprintf(`{"output":{"scenarios":[{"test_path":%q,"expected_outcomes":{"base":"fail","candidate":"pass"}}]}}`, testPath)
+	planRef := putRepairArtifact(t, store, []byte(planOut))
+	stageRef := putRepairArtifact(t, store, []byte(`{"result_ref":"`+planRef+`"}`))
+	subjects := []localworker.SubjectOutcome{
+		{Subject: "base", Commit: strings.Repeat("c", 40), Succeeded: true, EvidenceRef: "sha256:" + strings.Repeat("e", 64)},
+		{Subject: "candidate", Commit: strings.Repeat("d", 40), Succeeded: true, EvidenceRef: "sha256:" + strings.Repeat("f", 64)},
+	}
+	pair := localworker.PairEvidence{SchemaVersion: "1", Phase: "focused_tests", RunID: "run-1", ProfileDigest: profileDigest, TestArtifactDigest: artifactDigest, Subjects: subjects, Succeeded: true}
+	pairRef := putRepairArtifact(t, store, mustMarshal(t, pair))
+	run := testgenflow.Run{RunID: "run-1", Request: testgenflow.Request{ProfileDigest: profileDigest, InputMode: testgenflow.InputModeModelGeneration}, ChangedTestPaths: []string{testPath}, Reviews: []testgenflow.GenerationReview{{Stage: "plan", Action: "approve", Attempt: 1, ArtifactRef: stageRef}}}
+	repo.runs["run-1"] = run
+	work := testgenflow.MavenWorkRequest{WorkRequest: testgenflow.WorkRequest{RunID: "run-1", Attempt: 1, TestArtifactDigest: artifactDigest}, Phase: testgenflow.MavenPhaseFocusedTests}
+	result := testgenflow.MavenResult{Succeeded: true, EvidenceRef: pairRef}
+
+	diagnostic, mismatch := o.differentialOracleMismatch(context.Background(), work, result)
+	if !mismatch || !strings.Contains(diagnostic, "subject base was declared to fail but passed") || !strings.Contains(diagnostic, "does not discriminate") {
+		t.Fatalf("non-discriminating pair not failed: mismatch=%t diagnostic=%q", mismatch, diagnostic)
+	}
+
+	pair.Subjects[0].Succeeded = false
+	discriminating := testgenflow.MavenResult{Succeeded: true, EvidenceRef: putRepairArtifact(t, store, mustMarshal(t, pair))}
+	if _, mismatch = o.differentialOracleMismatch(context.Background(), work, discriminating); mismatch {
+		t.Fatal("discriminating pair was failed against its declared oracle")
+	}
+
+	repo.runs["run-1"] = testgenflow.Run{RunID: "run-1", Request: testgenflow.Request{ProfileDigest: profileDigest, InputMode: testgenflow.InputModeModelGeneration}, ChangedTestPaths: []string{testPath}}
+	if _, mismatch = o.differentialOracleMismatch(context.Background(), work, result); mismatch {
+		t.Fatal("pair without a declared oracle was failed")
+	}
+}
+
+func TestPairRepairFeedbackBindsSubjectsAndIncludesOutcomes(t *testing.T) {
+	o, repo, store := differentialOperationsFixture(t)
+	profileDigest := "sha256:" + strings.Repeat("a", 64)
+	baseCommit, candidateCommit := strings.Repeat("c", 40), strings.Repeat("d", 40)
+	candidateJSON := `{"schema_version":"1","files":[{"path":"src/test/java/example/CveTest.java","content":"package example;\nclass CveTest {}\n"}],"expected_test_ids":["example.CveTest#verifies"]}`
+	artifactDigest := putRepairArtifact(t, store, []byte(candidateJSON))
+	logRef := putRepairArtifact(t, store, []byte("base subject command log tail\n"))
+	baseEvidence := localworker.Evidence{SchemaVersion: "1", Subject: "base", SourceCommit: baseCommit, ProfileDigest: profileDigest, TestArtifactDigest: artifactDigest, Phase: "focused_tests", Succeeded: true, Artifacts: map[string]string{"command.log": logRef}}
+	candidateEvidence := localworker.Evidence{SchemaVersion: "1", Subject: "candidate", SourceCommit: candidateCommit, ProfileDigest: profileDigest, TestArtifactDigest: artifactDigest, Phase: "focused_tests", Succeeded: true}
+	baseRef := putRepairArtifact(t, store, mustMarshal(t, baseEvidence))
+	subjectRef := putRepairArtifact(t, store, mustMarshal(t, candidateEvidence))
+	pair := localworker.PairEvidence{SchemaVersion: "1", Phase: "focused_tests", RunID: "run-1", ProfileDigest: profileDigest, TestArtifactDigest: artifactDigest, Subjects: []localworker.SubjectOutcome{
+		{Subject: "base", Commit: baseCommit, Succeeded: true, EvidenceRef: baseRef},
+		{Subject: "candidate", Commit: candidateCommit, Succeeded: true, EvidenceRef: subjectRef},
+	}, Succeeded: true}
+	pairRef := putRepairArtifact(t, store, mustMarshal(t, pair))
+	run := testgenflow.Run{RunID: "run-1", Request: testgenflow.Request{ProfileDigest: profileDigest}, ResolvedCommit: baseCommit, MaxAttempts: 2, Attempts: []testgenflow.GenerationAttempt{{Number: 1, Status: testgenflow.AttemptFailed, TestArtifactDigest: artifactDigest, FocusedTestEvidenceRef: pairRef, LastError: "differential did not match the approved plan oracle"}}}
+	repo.runs["run-1"] = run
+	work := testgenflow.WorkRequest{RunID: "run-1", Attempt: 2}
+
+	feedback, err := o.repairFeedback(context.Background(), run, work)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"did not satisfy the approved oracle", "base@" + baseCommit + ": passed", "candidate@" + candidateCommit + ": passed", artifactDigest, pairRef, "base subject command log tail"} {
+		if !strings.Contains(feedback, want) {
+			t.Fatalf("pair repair feedback lost %q: %s", want, feedback)
+		}
+	}
+
+	tampered := pair
+	tampered.Subjects[0].Commit = candidateCommit
+	if _, err = o.pairRepairFeedback(context.Background(), run, run.Attempts[0], tampered, func(data []byte, n int, tail bool) string { return string(data) }); err == nil || !strings.Contains(err.Error(), "does not bind") {
+		t.Fatalf("tampered subject evidence accepted: %v", err)
+	}
+}
+
 func TestGenerationServiceRepairRequiresFreshReviewsAndDistinctPhaseKeys(t *testing.T) {
 	h := newGenerationServiceFixture(t, true)
 	h.worker.focusedFailures = 1
@@ -796,6 +958,21 @@ func (r *generationMemoryRepository) ClaimNextModelGenerationRun(_ context.Conte
 	r.lastFilter = []string{profile, policy}
 	return r.claim(holder, profile, policy, testgenflow.InputModeModelGeneration, lease)
 }
+func (r *generationMemoryRepository) ClaimUnknownModelGenerationRun(_ context.Context, id, holder, profile, policy string, revision int64, lease time.Duration) (*testgenflow.FlowClaim, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run, exists := r.runs[id]
+	if !exists || run.Status != testgenflow.StatusOutcomeUnknown || run.Revision != revision || run.Request.ProfileDigest != profile || run.Request.InputMode != testgenflow.InputModeModelGeneration || run.Request.Generation == nil || run.Request.Generation.PolicyDigest != policy {
+		return nil, nil
+	}
+	if current, ok := r.claims[id]; ok && current.LeaseUntil.After(time.Now()) {
+		return nil, nil
+	}
+	r.fence++
+	claim := testgenflow.FlowClaim{RunID: id, Holder: holder, Fence: r.fence, LeaseUntil: time.Now().Add(lease)}
+	r.claims[id] = claim
+	return &claim, nil
+}
 func (r *generationMemoryRepository) fenced(claim testgenflow.FlowClaim) error {
 	current, ok := r.claims[claim.RunID]
 	if !ok || current.Holder != claim.Holder || current.Fence != claim.Fence || !current.LeaseUntil.After(time.Now()) {
@@ -1018,12 +1195,16 @@ type generationFakeModel struct {
 	sourceEvidence          func(context.Context, string) ([]string, error)
 	diagnostic              string
 	active                  bool
+	unknownAfterComplete    string
 }
 
 func (w *generationFakeModel) Ready(context.Context) error { w.readyCalls++; return nil }
 func (w *generationFakeModel) PolicyDigest() string        { return w.policy }
 func (w *generationFakeModel) RunStage(ctx context.Context, request agentworker.StageRequest) (agentworker.StageResult, error) {
-	w.calls = append(w.calls, generationClone(request))
+	call := generationClone(request)
+	call.Work.ReconcileOnly = request.Work.ReconcileOnly
+	call.RecoveryOnly = request.RecoveryOnly
+	w.calls = append(w.calls, call)
 	if w.sourceEvidence != nil {
 		if refs, err := w.sourceEvidence(ctx, request.Work.RunID); err != nil || len(refs) == 0 {
 			return agentworker.StageResult{}, &testgenflow.WorkerFailure{Diagnostic: "synthetic generation source discovery unavailable", OutcomeUnknown: true, Cause: err}
@@ -1049,6 +1230,10 @@ func (w *generationFakeModel) RunStage(ctx context.Context, request agentworker.
 	result := agentworker.StageResult{ArtifactRef: ref, Status: status, Diagnostic: diagnostic}
 	if err == nil {
 		w.jobs[request.Work.IdempotencyKey] = result
+		if w.unknownAfterComplete == request.Phase && !request.RecoveryOnly {
+			w.unknownAfterComplete = ""
+			return agentworker.StageResult{}, &testgenflow.WorkerFailure{Diagnostic: "generation evidence retained but completion acknowledgement unknown", OutcomeUnknown: true}
+		}
 	}
 	return result, err
 }

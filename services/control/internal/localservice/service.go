@@ -113,6 +113,7 @@ func New(config Config) (*Service, error) {
 	service := &Service{config: config, api: api}
 	if modelMode {
 		api.ApproveGeneratedCode = service.approveGeneratedCode
+		api.ReconcileGeneration = service.reconcileUnknownPlan
 	}
 	if !api.Ready() {
 		return nil, errors.New("local execution API configuration is invalid")
