@@ -19,30 +19,54 @@ func TestModelGenerationRequestValidatesBoundedClientInput(t *testing.T) {
 		"artifact generation": func(r *Request) {
 			r.InputMode, r.InputArtifactDigest = InputModeArtifactInput, digest([]byte("upload"))
 		},
-		"input artifact":      func(r *Request) { r.InputArtifactDigest = digest([]byte("upload")) },
-		"SCM completion":      func(r *Request) { r.CompletionMode = "" },
-		"empty objective":     func(r *Request) { r.Generation.Objective = " " },
-		"oversized objective": func(r *Request) { r.Generation.Objective = strings.Repeat("x", 8193) },
-		"invalid UTF8":        func(r *Request) { r.Generation.Objective = "\xff" },
-		"NUL objective":       func(r *Request) { r.Generation.Objective = "test\x00injection" },
-		"missing policy":      func(r *Request) { r.Generation.PolicyDigest = "" },
-		"mutable policy":      func(r *Request) { r.Generation.PolicyDigest = "latest" },
-		"missing paths":       func(r *Request) { r.Generation.ContextPaths = nil },
-		"too many paths":      func(r *Request) { r.Generation.ContextPaths = make([]string, 65) },
-		"duplicate paths":     func(r *Request) { r.Generation.ContextPaths = []string{"pom.xml", "pom.xml"} },
-		"absolute path":       func(r *Request) { r.Generation.ContextPaths = []string{"/tmp/source"} },
-		"parent path":         func(r *Request) { r.Generation.ContextPaths = []string{".."} },
-		"escape path":         func(r *Request) { r.Generation.ContextPaths = []string{"../source"} },
-		"noncanonical path":   func(r *Request) { r.Generation.ContextPaths = []string{"src/../pom.xml"} },
-		"backslash path":      func(r *Request) { r.Generation.ContextPaths = []string{`src\test`} },
-		"control path":        func(r *Request) { r.Generation.ContextPaths = []string{"src\ntest"} },
-		"oversized path":      func(r *Request) { r.Generation.ContextPaths = []string{strings.Repeat("x", 1025)} },
+		"input artifact":              func(r *Request) { r.InputArtifactDigest = digest([]byte("upload")) },
+		"SCM completion":              func(r *Request) { r.CompletionMode = "" },
+		"empty objective":             func(r *Request) { r.Generation.Objective = " " },
+		"oversized objective":         func(r *Request) { r.Generation.Objective = strings.Repeat("x", 8193) },
+		"invalid UTF8":                func(r *Request) { r.Generation.Objective = "\xff" },
+		"NUL objective":               func(r *Request) { r.Generation.Objective = "test\x00injection" },
+		"missing policy":              func(r *Request) { r.Generation.PolicyDigest = "" },
+		"mutable policy":              func(r *Request) { r.Generation.PolicyDigest = "latest" },
+		"malformed opaque context":    func(r *Request) { r.Generation.ContextInput = json.RawMessage(`{"unterminated":`) },
+		"invalid utf8 opaque context": func(r *Request) { r.Generation.ContextInput = json.RawMessage([]byte{'"', 0xff, '"'}) },
+		"oversized opaque context": func(r *Request) {
+			r.Generation.ContextInput = json.RawMessage(`"` + strings.Repeat("x", 64*1024) + `"`)
+		},
+		"missing paths":     func(r *Request) { r.Generation.ContextPaths = nil },
+		"too many paths":    func(r *Request) { r.Generation.ContextPaths = make([]string, 65) },
+		"duplicate paths":   func(r *Request) { r.Generation.ContextPaths = []string{"pom.xml", "pom.xml"} },
+		"absolute path":     func(r *Request) { r.Generation.ContextPaths = []string{"/tmp/source"} },
+		"parent path":       func(r *Request) { r.Generation.ContextPaths = []string{".."} },
+		"escape path":       func(r *Request) { r.Generation.ContextPaths = []string{"../source"} },
+		"noncanonical path": func(r *Request) { r.Generation.ContextPaths = []string{"src/../pom.xml"} },
+		"backslash path":    func(r *Request) { r.Generation.ContextPaths = []string{`src\test`} },
+		"control path":      func(r *Request) { r.Generation.ContextPaths = []string{"src\ntest"} },
+		"oversized path":    func(r *Request) { r.Generation.ContextPaths = []string{strings.Repeat("x", 1025)} },
 	} {
 		t.Run(name, func(t *testing.T) {
 			invalid := cloneRun(modelRun(t)).Request
 			mutate(&invalid)
 			if err := invalid.Validate(); !errors.Is(err, ErrInvalidRequest) {
 				t.Fatalf("invalid model request accepted: %v", err)
+			}
+		})
+	}
+	discovered := modelRun(t).Request
+	discovered.Generation.ContextMode = ContextModeProfileDiscovery
+	discovered.Generation.ContextPaths = nil
+	discovered.Generation.ContextInput = json.RawMessage(`{"references":[{"path":"src/example/Service.java","reason":"user-supplied hint"}],"provenance":"user"}`)
+	if err := discovered.Validate(); err != nil {
+		t.Fatalf("profile discovery with opaque supplemental context rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*GenerationRequest){
+		"discovery with client paths": func(g *GenerationRequest) { g.ContextPaths = []string{"src/main/java/example/Service.java"} },
+		"unknown context mode":        func(g *GenerationRequest) { g.ContextMode = "client-selected-files" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := *discovered.Generation
+			mutate(&invalid)
+			if err := invalid.Validate(); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("invalid discovered context accepted: %v", err)
 			}
 		})
 	}
@@ -59,6 +83,8 @@ func TestGenerationRequestDigestBindsObjectiveContextAndServerPolicy(t *testing.
 	for _, change := range []func(*GenerationRequest){
 		func(g *GenerationRequest) { g.Objective = "different behavior" },
 		func(g *GenerationRequest) { g.ContextPaths = []string{"src/main/java"} },
+		func(g *GenerationRequest) { g.ContextMode = ContextModeProfileDiscovery; g.ContextPaths = nil },
+		func(g *GenerationRequest) { g.ContextInput = json.RawMessage(`{"references":["other"]}`) },
 		func(g *GenerationRequest) { g.PolicyDigest = digest([]byte("other policy")) },
 	} {
 		request := cloneRun(base).Request
@@ -113,6 +139,32 @@ func TestCheckpointIdentityBindsRunRequestAttemptStageAndArtifact(t *testing.T) 
 	assertGenerationEventRejected(t, waiting, Event{Type: EventGenerationStarted})
 	assertGenerationEventRejected(t, waiting, Event{Type: EventGenerationCompleted})
 	assertGenerationEventRejected(t, waiting, Event{Type: EventFocusedTestCompleted, Succeeded: true, EvidenceRef: "artifact://fabricated"})
+}
+
+func TestUnknownModelRunRecoversOnlyToEvidenceBoundPlanReview(t *testing.T) {
+	run := startGeneration(t, modelRun(t))
+	unknown := apply(t, run, Event{Type: EventOutcomeUnknown, Diagnostic: "generation evidence retained but completion acknowledgement unknown"}, run.UpdatedAt.Add(time.Second))
+	checkpoint := modelCheckpoint(unknown, "plan")
+	recovery := GenerationRecovery{OperationKey: WorkKey(unknown.RunID, "generate", 1) + ":plan", InputDigest: digest([]byte("exact Plan operation input"))}
+	for name, mutate := range map[string]func(*GenerationCheckpoint, *GenerationRecovery){
+		"wrong phase key": func(_ *GenerationCheckpoint, r *GenerationRecovery) {
+			r.OperationKey = WorkKey(unknown.RunID, "generate", 1) + ":code"
+		},
+		"wrong digest":    func(_ *GenerationCheckpoint, r *GenerationRecovery) { r.InputDigest = "not-a-digest" },
+		"code checkpoint": func(c *GenerationCheckpoint, _ *GenerationRecovery) { *c = modelCheckpoint(unknown, "code") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, r := checkpoint, recovery
+			mutate(&c, &r)
+			assertGenerationEventRejected(t, unknown, Event{Type: EventGenerationRecovered, Checkpoint: &c, Recovery: &r})
+		})
+	}
+	updated := apply(t, unknown, Event{Type: EventGenerationRecovered, Checkpoint: &checkpoint, Recovery: &recovery}, unknown.UpdatedAt.Add(time.Second))
+	if updated.Status != StatusWaitingReview || updated.Checkpoint == nil || updated.Checkpoint.Stage != "plan" || updated.Checkpoint.ArtifactRef != checkpoint.ArtifactRef || updated.Attempts[0].Status != AttemptRunning || updated.TestsAdded != 0 || updated.LastError != "" {
+		t.Fatalf("verified Plan recovery bypassed review or fabricated execution: %#v", updated)
+	}
+	assertGenerationEventRejected(t, unknown, Event{Type: EventGenerationCheckpointRequested, Checkpoint: &checkpoint})
+	assertGenerationEventRejected(t, updated, Event{Type: EventGenerationRecovered, Checkpoint: &checkpoint, Recovery: &recovery})
 }
 
 func TestGenerationReviewRequiresAttributionAndExactUnexpiredScope(t *testing.T) {

@@ -93,6 +93,7 @@ const (
 	EventGenerationStarted             EventType = "generation_started"
 	EventGenerationCompleted           EventType = "generation_completed"
 	EventGenerationCheckpointRequested EventType = "generation_checkpoint_requested"
+	EventGenerationRecovered           EventType = "generation_recovered"
 	EventGenerationReviewDecided       EventType = "generation_review_decided"
 	EventGenerationStopped             EventType = "generation_stopped"
 	EventArtifactInputCompleted        EventType = "artifact_input_completed"
@@ -186,6 +187,7 @@ type Event struct {
 	EvidenceRef          string                `json:"evidence_ref,omitempty"`
 	TerminationConfirmed bool                  `json:"termination_confirmed,omitempty"`
 	Checkpoint           *GenerationCheckpoint `json:"checkpoint,omitempty"`
+	Recovery             *GenerationRecovery   `json:"recovery,omitempty"`
 	Review               *GenerationReview     `json:"review,omitempty"`
 	Outcome              string                `json:"outcome,omitempty"`
 }
@@ -233,8 +235,8 @@ func NewRun(runID, idempotencyKey string, request Request, maxAttempts int, now 
 
 func (r Request) Validate() error {
 	repository, err := url.Parse(r.RepositoryURL)
-	if err != nil || repository.Scheme != "https" || repository.Host == "" || repository.User != nil || repository.RawQuery != "" || repository.Fragment != "" {
-		return fmt.Errorf("%w: repository URL must be credential-free HTTPS", ErrInvalidRequest)
+	if err != nil || repository.Host == "" || repository.User != nil || repository.RawQuery != "" || repository.Fragment != "" || !validRepositoryScheme(repository) {
+		return fmt.Errorf("%w: repository URL must be credential-free HTTPS, or host-local HTTP for local development", ErrInvalidRequest)
 	}
 	if !commitPattern.MatchString(r.Revision) {
 		return fmt.Errorf("%w: revision must be an immutable Git commit", ErrInvalidRequest)
@@ -283,7 +285,7 @@ func (r Run) Apply(event Event) (Run, error) {
 	if event.ExpectedRevision != r.Revision {
 		return Run{}, ErrRevisionConflict
 	}
-	if !isActive(r.Status) && !(r.Status == StatusCancelRequested && (event.Type == EventCancelled || event.Type == EventOutcomeUnknown)) {
+	if !isActive(r.Status) && !(r.Status == StatusCancelRequested && (event.Type == EventCancelled || event.Type == EventOutcomeUnknown)) && !(r.Status == StatusOutcomeUnknown && event.Type == EventGenerationRecovered) {
 		return Run{}, fmt.Errorf("%w: run is already %s", ErrInvalidTransition, r.Status)
 	}
 	if event.OccurredAt.Before(r.UpdatedAt) {
@@ -378,7 +380,7 @@ func (r Run) Apply(event Event) (Run, error) {
 		attempt.PatchDigest = strings.ToLower(event.PatchDigest)
 		attempt.TestArtifactDigest = strings.ToLower(event.TestArtifactDigest)
 		next.Stage = StageFocusedTest
-	case EventGenerationCheckpointRequested, EventGenerationReviewDecided, EventGenerationStopped:
+	case EventGenerationCheckpointRequested, EventGenerationRecovered, EventGenerationReviewDecided, EventGenerationStopped:
 		if err := next.applyGenerationEvent(r, event); err != nil {
 			return Run{}, err
 		}
@@ -854,6 +856,19 @@ func boundedValue(value string, maximum int, name string) (string, error) {
 func validFlowIdent(value string) bool { return flowIDPattern.MatchString(value) }
 
 func validCommit(value string) bool { return commitPattern.MatchString(value) }
+
+// validRepositoryScheme accepts credential-free HTTPS everywhere, and plain
+// HTTP only for host-local development remotes (a local GitLab, for example).
+func validRepositoryScheme(repository *url.URL) bool {
+	if repository.Scheme == "https" {
+		return true
+	}
+	if repository.Scheme == "http" {
+		host := repository.Hostname()
+		return host == "host.containers.internal" || host == "localhost" || host == "127.0.0.1"
+	}
+	return false
+}
 
 func validBranch(value string) bool {
 	return branchNameRegexp.MatchString(value) && value != "@" && !strings.HasPrefix(value, "-") &&

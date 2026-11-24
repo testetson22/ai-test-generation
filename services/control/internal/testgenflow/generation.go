@@ -13,10 +13,14 @@ import (
 
 var generationTestIDPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+#[A-Za-z_][A-Za-z0-9_]*$`)
 
+const ContextModeProfileDiscovery = "profile_discovery"
+
 type GenerationRequest struct {
-	Objective    string   `json:"objective"`
-	ContextPaths []string `json:"context_paths"`
-	PolicyDigest string   `json:"policy_digest"`
+	Objective    string          `json:"objective"`
+	ContextMode  string          `json:"context_mode,omitempty"`
+	ContextPaths []string        `json:"context_paths,omitempty"`
+	ContextInput json.RawMessage `json:"context_input,omitempty"`
+	PolicyDigest string          `json:"policy_digest"`
 }
 
 type GenerationCheckpoint struct {
@@ -25,6 +29,11 @@ type GenerationCheckpoint struct {
 	ArtifactRef string    `json:"artifact_ref"`
 	Attempt     int       `json:"attempt"`
 	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+type GenerationRecovery struct {
+	OperationKey string `json:"operation_key"`
+	InputDigest  string `json:"input_digest"`
 }
 
 type GenerationReview struct {
@@ -47,15 +56,27 @@ func (g GenerationRequest) Validate() error {
 	if strings.TrimSpace(g.Objective) == "" || len(g.Objective) > 8192 || !utf8.ValidString(g.Objective) || strings.ContainsRune(g.Objective, '\x00') || !sha256Pattern.MatchString(g.PolicyDigest) {
 		return fmt.Errorf("%w: objective must be 1..8192 bytes and policy must be a SHA256 digest", ErrInvalidRequest)
 	}
-	if len(g.ContextPaths) < 1 || len(g.ContextPaths) > 64 {
-		return fmt.Errorf("%w: context path count must be 1..64", ErrInvalidRequest)
+	if len(g.ContextInput) > 64*1024 || len(g.ContextInput) > 0 && (!utf8.Valid(g.ContextInput) || !json.Valid(g.ContextInput)) {
+		return fmt.Errorf("%w: optional context input must be valid JSON no larger than 65536 bytes", ErrInvalidRequest)
 	}
-	seen := make(map[string]bool, len(g.ContextPaths))
-	for _, value := range g.ContextPaths {
-		if !validSubdirectory(value) || len(value) > 1024 || strings.IndexFunc(value, unicode.IsControl) >= 0 || !utf8.ValidString(value) || seen[value] {
-			return fmt.Errorf("%w: context paths must be unique bounded normalized repository-relative paths", ErrInvalidRequest)
+	switch g.ContextMode {
+	case "":
+		if len(g.ContextPaths) < 1 || len(g.ContextPaths) > 64 {
+			return fmt.Errorf("%w: legacy context path count must be 1..64", ErrInvalidRequest)
 		}
-		seen[value] = true
+		seen := make(map[string]bool, len(g.ContextPaths))
+		for _, value := range g.ContextPaths {
+			if !validSubdirectory(value) || len(value) > 1024 || strings.IndexFunc(value, unicode.IsControl) >= 0 || !utf8.ValidString(value) || seen[value] {
+				return fmt.Errorf("%w: legacy context paths must be unique bounded normalized repository-relative paths", ErrInvalidRequest)
+			}
+			seen[value] = true
+		}
+	case ContextModeProfileDiscovery:
+		if len(g.ContextPaths) != 0 {
+			return fmt.Errorf("%w: profile discovery cannot include client-selected source paths", ErrInvalidRequest)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported source context mode", ErrInvalidRequest)
 	}
 	return nil
 }
@@ -136,12 +157,18 @@ func (r Run) generationApproval(attempt int, stage string) *GenerationReview {
 }
 
 func (r Run) validateGenerationEvent(event Event) error {
-	if event.Checkpoint != nil && event.Type != EventGenerationCheckpointRequested || event.Review != nil && event.Type != EventGenerationReviewDecided || event.Outcome != "" && event.Type != EventGenerationStopped {
+	if event.Checkpoint != nil && event.Type != EventGenerationCheckpointRequested && event.Type != EventGenerationRecovered || event.Recovery != nil && event.Type != EventGenerationRecovered || event.Review != nil && event.Type != EventGenerationReviewDecided || event.Outcome != "" && event.Type != EventGenerationStopped {
 		return fmt.Errorf("%w: generation payload is not valid for this event type", ErrInvalidEvent)
 	}
-	if event.Type == EventGenerationCheckpointRequested || event.Type == EventGenerationReviewDecided || event.Type == EventGenerationStopped {
+	if event.Type == EventGenerationCheckpointRequested || event.Type == EventGenerationRecovered || event.Type == EventGenerationReviewDecided || event.Type == EventGenerationStopped {
 		if event.ResolvedCommit != "" || event.Succeeded || len(event.ChangedTestPaths) != 0 || event.PatchDigest != "" || event.TestArtifactDigest != "" || event.ResultArtifactRef != "" || event.PRURL != "" || event.TerminationConfirmed {
 			return fmt.Errorf("%w: generation review or stop cannot carry execution or publication results", ErrInvalidEvent)
+		}
+	}
+	if event.Type == EventGenerationRecovered {
+		wantKey := WorkKey(r.RunID, "generate", len(r.Attempts)) + ":plan"
+		if event.Recovery == nil || event.Recovery.OperationKey != wantKey || !sha256Pattern.MatchString(event.Recovery.InputDigest) || event.Checkpoint == nil || event.Checkpoint.Stage != "plan" {
+			return fmt.Errorf("%w: generation recovery must bind the current Plan operation and checkpoint", ErrInvalidEvent)
 		}
 	}
 	if r.Status == StatusWaitingReview && event.Type != EventGenerationReviewDecided && event.Type != EventCancelRequested {
@@ -154,7 +181,7 @@ func (r Run) validateGenerationEvent(event Event) error {
 			return err
 		}
 	}
-	if event.Type == EventGenerationCheckpointRequested && event.Checkpoint != nil && !event.Checkpoint.ExpiresAt.After(event.OccurredAt) {
+	if (event.Type == EventGenerationCheckpointRequested || event.Type == EventGenerationRecovered) && event.Checkpoint != nil && !event.Checkpoint.ExpiresAt.After(event.OccurredAt) {
 		return fmt.Errorf("%w: checkpoint must expire after it is requested", ErrInvalidEvent)
 	}
 	if event.Type == EventGenerationCompleted && r.Request.InputMode == InputModeModelGeneration {
@@ -184,6 +211,17 @@ func (next *Run) applyGenerationEvent(r Run, event Event) error {
 		}
 		next.Checkpoint = &checkpoint
 		next.Status = StatusWaitingReview
+	case EventGenerationRecovered:
+		if r.Status != StatusOutcomeUnknown || r.Checkpoint != nil || event.Checkpoint == nil {
+			return fmt.Errorf("%w: only an unknown run without a checkpoint can recover a completed Plan", ErrInvalidTransition)
+		}
+		checkpoint := *event.Checkpoint
+		if checkpoint.Stage != "plan" || checkpoint.Validate(r) != nil || !checkpoint.ExpiresAt.After(event.OccurredAt) {
+			return fmt.Errorf("%w: recovered Plan checkpoint is invalid", ErrInvalidTransition)
+		}
+		next.Checkpoint = &checkpoint
+		next.Status = StatusWaitingReview
+		next.LastError = ""
 	case EventGenerationReviewDecided:
 		if event.Review == nil {
 			return fmt.Errorf("%w: generation review payload is required", ErrInvalidEvent)
