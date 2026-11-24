@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from atg_generation_worker import __main__ as cli
 from atg_generation_worker.harnesses import (
-    AIDER_LIMITATION, AiderHarness, HarnessResponse, PydanticAIHarness,
+    AIDER_LIMITATION, INSTRUCTIONS, AiderHarness, HarnessResponse, PydanticAIHarness,
 )
 from atg_generation_worker.protocol import (
     MAX_TASK_BYTES, ProtocolError, REVIEW_LIMITATION, digest, encode,
@@ -116,6 +116,25 @@ class ProtocolTests(unittest.TestCase):
     def test_context_budget_counts_prior_and_objective_not_just_source(self):
         task = task_for()
         task["prior"] = {"repair_feedback": "x" * 1000}
+        task["limits"]["max_context_bytes"] = 1000
+        with self.assertRaisesRegex(ProtocolError, "context_budget_exceeded"):
+            validate_task(encode(task))
+
+    def test_optional_opaque_context_is_digest_bound_prompt_data_and_bounded(self):
+        task = task_for()
+        task["context_input"] = {"origin": "user", "references": [{"path": "src/example/Service.java"}]}
+        encoded = encode(task)
+        validated, _ = validate_task(encoded, digest(encoded))
+        prompt = json.loads(prompt_bytes(validated))
+        self.assertEqual(prompt["context_input"], task["context_input"])
+        self.assertIn("supplemental context_input", INSTRUCTIONS)
+
+        task["context_input"] = "x" * 65537
+        with self.assertRaisesRegex(ProtocolError, "context_input_size"):
+            validate_task(encode(task))
+
+        task = task_for()
+        task["context_input"] = {"hint": "x" * 2000}
         task["limits"]["max_context_bytes"] = 1000
         with self.assertRaisesRegex(ProtocolError, "context_budget_exceeded"):
             validate_task(encode(task))
@@ -242,7 +261,7 @@ class WorkerTests(unittest.TestCase):
                 captured["run"] = kwargs
                 return SimpleNamespace(output=SimpleNamespace(
                     status="completed", diagnostic="", output=SimpleNamespace(model_dump=lambda **_: output_for())),
-                    usage=lambda: SimpleNamespace(input_tokens=10, output_tokens=20, requests=1))
+                    usage=SimpleNamespace(input_tokens=10, output_tokens=20, requests=1))
         def create_model(model_name, /, **kwargs):
             captured.setdefault("types", {})[model_name] = kwargs
             return type(model_name, (), {})
@@ -266,8 +285,8 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(result["usage"], {"input_tokens": 10, "output_tokens": 20, "requests": 1})
         self.assertEqual(captured["client"], {"api_key": "synthetic-key", "base_url": "https://model.example.invalid/v1",
                                               "max_retries": 0, "timeout": 60})
-        self.assertEqual((captured["agent"]["tools"], captured["agent"]["retries"], captured["agent"]["output_retries"]),
-                         ((), 0, 0))
+        self.assertEqual((captured["agent"]["tools"], captured["agent"]["retries"]), ((), 0))
+        self.assertNotIn("output_retries", captured["agent"])
         self.assertEqual(captured["run"], {"model_settings": {"max_tokens": 4096},
                                              "usage_limits": {"request_limit": 1, "output_tokens_limit": 4096}})
         for definition in captured["types"].values():
@@ -330,6 +349,82 @@ class WorkerTests(unittest.TestCase):
         result = run_task(encode(task), allow_model_calls=True, harness=adapter)
         self.assertEqual(result["diagnostic"], "test_path_collision")
 
+    def test_code_reports_test_path_and_fully_qualified_id_format_failures(self):
+        output = output_for("code")
+        output["suggested_test_ids"] = ["AccountTest#zero"]
+        adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task_for("code")), allow_model_calls=True, harness=adapter)
+        self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", "invalid_suggested_test_id"))
+
+        output = output_for("code")
+        output["files"][0]["path"] = "src/test/java/example/Account.java"
+        adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task_for("code")), allow_model_calls=True, harness=adapter)
+        self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", "invalid_test_path"))
+
+    def test_plan_supports_test_levels_and_structured_expected_outcomes(self):
+        output = output_for("plan")
+        output["scenarios"][0]["expected_outcomes"] = {"base": "fail", "candidate": "pass"}
+        output["scenarios"].append({"name": "import endpoint", "source_paths": ["src/main/java/example/Account.java"],
+                                    "test_path": "src/test/java/example/AccountIT.java", "behavior": "Endpoint import",
+                                    "oracle": "HTTP 200", "test_level": "integration"})
+        adapter, _ = stub_for("plan", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task_for("plan")), allow_model_calls=True, harness=adapter)
+        self.assertEqual(result["status"], "completed")
+        for mutation, diagnostic in (({"test_level": "system"}, "invalid_test_level"),
+                                     ({"expected_outcomes": {"base": "maybe"}}, "invalid_expected_outcome")):
+            bad = output_for("plan")
+            bad["scenarios"][0].update(mutation)
+            adapter, _ = stub_for("plan", response=HarnessResponse(encode(bad)))
+            result = run_task(encode(task_for("plan")), allow_model_calls=True, harness=adapter)
+            self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", diagnostic))
+
+    def test_code_implements_only_unit_scenarios_and_accounts_for_every_planned_one(self):
+        task = task_for("code")
+        task["prior"]["plan"]["scenarios"].append({"name": "import endpoint",
+                                                   "source_paths": ["src/main/java/example/Account.java"],
+                                                   "test_path": "src/test/java/example/AccountApiTest.java",
+                                                   "behavior": "Endpoint import", "oracle": "HTTP 200",
+                                                   "test_level": "integration"})
+        output = output_for("code")
+        output["unimplemented_scenarios"] = [{"name": "import endpoint", "reason": "execution profile is unit-only"}]
+        adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task), allow_model_calls=True, harness=adapter)
+        self.assertEqual(result["status"], "completed")
+
+        output = output_for("code")
+        adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task), allow_model_calls=True, harness=adapter)
+        self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", "unaccounted_scenario"))
+
+        output = output_for("code")
+        output["files"][0]["path"] = task["prior"]["plan"]["scenarios"][1]["test_path"]
+        output["unimplemented_scenarios"] = [{"name": "import endpoint", "reason": "covered"},
+                                             {"name": "zero balance", "reason": "covered"}]
+        adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+        result = run_task(encode(task), allow_model_calls=True, harness=adapter)
+        self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", "non_unit_implementation"))
+
+        for entries, diagnostic in (([{"name": "missing", "reason": "unknown"}], "unknown_scenario"),
+                                    ([{"name": "import endpoint", "reason": "a"},
+                                      {"name": "import endpoint", "reason": "b"}], "duplicate_scenario")):
+            output = output_for("code")
+            output["unimplemented_scenarios"] = entries
+            adapter, _ = stub_for("code", response=HarnessResponse(encode(output)))
+            result = run_task(encode(task), allow_model_calls=True, harness=adapter)
+            self.assertEqual((result["status"], result["diagnostic"]), ("inconclusive", diagnostic))
+
+    def test_repository_url_allows_host_local_http_for_local_development(self):
+        task = task_for()
+        task["source"]["repository_url"] = "http://host.containers.internal:8090/development/spring-boot-example-application.git"
+        validate_task(encode(task))
+
+        for unsafe in ("http://git.example/repo.git", "http://token@host.containers.internal:8090/repo.git"):
+            task = task_for()
+            task["source"]["repository_url"] = unsafe
+            with self.assertRaisesRegex(ProtocolError, "unsafe_url"):
+                validate_task(encode(task))
+
     def test_code_honors_supplied_prior_plan_and_profile_decoder_bounds(self):
         task = task_for("code")
         adapter, _ = stub_for("code")
@@ -378,9 +473,13 @@ class WorkerTests(unittest.TestCase):
         adapter, _ = stub_for(response=HarnessResponse(status="blocked", diagnostic="error " + secret))
         result = run_task(encode(task_for()), allow_model_calls=True, credential=secret, harness=adapter)
         self.assertEqual(result["diagnostic"], "error [REDACTED]")
-        failing = PydanticAIHarness(Mock(side_effect=RuntimeError(secret)))
+        class ProviderRateLimit(RuntimeError):
+            status_code = 429
+
+        failing = PydanticAIHarness(Mock(side_effect=ProviderRateLimit(secret)))
         result = run_task(encode(task_for()), allow_model_calls=True, credential=secret, harness=failing)
-        self.assertEqual(result["status"], "failed")
+        self.assertEqual((result["status"], result["diagnostic"]),
+                         ("failed", "harness_failed:ProviderRateLimit:http_429; live_integration_not_verified"))
         self.assertNotIn(secret, encode(result).decode())
         task = task_for()
         task["objective"] = secret

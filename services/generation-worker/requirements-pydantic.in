@@ -1,0 +1,6 @@
+# Pydantic AI live worker dependencies; resolved to a platform-aware hashed lock.
+pydantic-ai-slim[openai]==2.68.0
+
+# Local project build backend, installed from the lock before no-isolation install.
+setuptools>=68
+wheel

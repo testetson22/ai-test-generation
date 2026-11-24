@@ -24,12 +24,15 @@ DIGEST = r"sha256:[A-Fa-f0-9]{64}"
 COMMIT = r"(?:[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})"
 PATH = r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
 TEST_PATH = r"src/test/java/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*Test\.java"
-TEST_ID = r"[A-Za-z_$][A-Za-z0-9_.$]*#[A-Za-z_$][A-Za-z0-9_$]*"
+TEST_ID = r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+#[A-Za-z_][A-Za-z0-9_]*"
 USAGE_KEYS = {"input_tokens", "output_tokens", "requests"}
+TEST_LEVELS = ("unit", "integration", "functional", "end_to_end")
+EXPECTED_OUTCOMES = ("pass", "fail", "any")
 TASK_KEYS = {
     "schema_version", "job_id", "run_id", "attempt", "phase", "objective",
     "profile_digest", "policy_digest", "harness", "model", "source", "prior", "limits",
 }
+OPTIONAL_TASK_KEYS = {"context_input"}
 RESULT_KEYS = {
     "schema_version", "job_id", "run_id", "attempt", "phase", "request_digest",
     "source_commit", "profile_digest", "policy_digest", "harness", "model", "status",
@@ -59,7 +62,12 @@ class AnalysisOutput(TypedDict):
     limitations: list[str]
 
 
-class Scenario(TypedDict):
+class ScenarioOptional(TypedDict, total=False):
+    test_level: str
+    expected_outcomes: dict[str, str]
+
+
+class Scenario(ScenarioOptional):
     name: str
     source_paths: list[str]
     test_path: str
@@ -78,10 +86,16 @@ class GeneratedFile(TypedDict):
     content: str
 
 
+class UnimplementedScenario(TypedDict):
+    name: str
+    reason: str
+
+
 class CodeOutput(TypedDict):
     summary: str
     files: list[GeneratedFile]
     suggested_test_ids: list[str]
+    unimplemented_scenarios: list[UnimplementedScenario]
     limitations: list[str]
 
 
@@ -179,7 +193,12 @@ def _strings(value: object, *, pattern: str | None = None, maximum: int = 16384,
 
 
 def _path(value: object, test: bool = False) -> str:
-    value = _text(value, 240, TEST_PATH if test else PATH)
+    try:
+        value = _text(value, 240, TEST_PATH if test else PATH)
+    except ProtocolError as error:
+        if test and str(error) == "string_pattern":
+            raise ProtocolError("invalid_test_path") from None
+        raise
     if any(part in (".", "..") for part in value.split("/")):
         raise ProtocolError("unsafe_path")
     return value
@@ -190,7 +209,10 @@ def _url(value: object, repository: bool = False) -> None:
     try:
         parsed = urlsplit(value)
         port = parsed.port
-        if (parsed.scheme not in (("https",) if repository else ("http", "https"))
+        schemes = ("http", "https")
+        if repository and parsed.hostname not in ("host.containers.internal", "localhost", "127.0.0.1"):
+            schemes = ("https",)
+        if (parsed.scheme not in schemes
                 or not parsed.hostname or parsed.username is not None or parsed.password is not None
                 or parsed.query or parsed.fragment or any(c.isspace() or ord(c) < 32 for c in value)
                 or "@" in unquote(parsed.netloc) or "\\" in value or (port is not None and port == 0)):
@@ -203,7 +225,7 @@ def validate_task(raw: bytes, expected_digest: str | None = None) -> tuple[dict,
     request_digest = digest(raw)
     if expected_digest is not None and expected_digest != request_digest:
         raise ProtocolError("request_digest_mismatch")
-    task = _object(decode(raw, MAX_TASK_BYTES), TASK_KEYS)
+    task = _object(decode(raw, MAX_TASK_BYTES), TASK_KEYS, OPTIONAL_TASK_KEYS)
     if task["schema_version"] != "1" or task["phase"] not in ("analyze", "plan", "code"):
         raise ProtocolError("task_version_or_phase")
     if task["harness"] not in ("pydantic_ai", "aider"):
@@ -214,6 +236,8 @@ def validate_task(raw: bytes, expected_digest: str | None = None) -> tuple[dict,
         _text(task[key], 71, DIGEST)
     _integer(task["attempt"], 1, 100)
     _text(task["objective"])
+    if "context_input" in task and len(encode(task["context_input"])) > 65536:
+        raise ProtocolError("context_input_size")
     model = _object(task["model"], {"provider", "endpoint", "name"})
     if model["provider"] != "openai_compatible":
         raise ProtocolError("unknown_provider")
@@ -228,7 +252,7 @@ def validate_task(raw: bytes, expected_digest: str | None = None) -> tuple[dict,
     for key in ("tree_id", "artifact_ref"):
         _text(source[key], 256, ID)
     paths = set()
-    for item in _array(source["files"], minimum=1, maximum=64):
+    for item in _array(source["files"], minimum=1, maximum=128):
         item = _object(item, {"path", "digest", "content"})
         path = _path(item["path"])
         if path in paths:
@@ -256,8 +280,11 @@ def validate_task(raw: bytes, expected_digest: str | None = None) -> tuple[dict,
 
 def prompt_bytes(task: dict) -> bytes:
     """One explicit data envelope; prior reference names never become CLI arguments."""
-    return encode({"phase": task["phase"], "objective": task["objective"],
-                   "source": task["source"], "prior": task["prior"]})
+    prompt = {"phase": task["phase"], "objective": task["objective"],
+              "source": task["source"], "prior": task["prior"]}
+    if "context_input" in task:
+        prompt["context_input"] = task["context_input"]
+    return encode(prompt)
 
 
 def validate_output(output: dict, task: dict) -> None:
@@ -265,7 +292,7 @@ def validate_output(output: dict, task: dict) -> None:
     required = {"summary", "limitations"} | {
         "analyze": {"facts", "gaps"}, "plan": {"scenarios"}, "code": {"files", "suggested_test_ids"},
     }[phase]
-    _object(output, required)
+    _object(output, required, {"unimplemented_scenarios"} if phase == "code" else frozenset())
     _text(output["summary"])
     _strings(output["limitations"])
     source = {item["path"]: item["content"] for item in task["source"]["files"]}
@@ -288,22 +315,50 @@ def validate_output(output: dict, task: dict) -> None:
     elif phase == "plan":
         names = set()
         for scenario in _array(output["scenarios"], minimum=1):
-            _object(scenario, {"name", "source_paths", "test_path", "behavior", "oracle"})
+            _object(scenario, {"name", "source_paths", "test_path", "behavior", "oracle"},
+                    {"test_level", "expected_outcomes"})
             for key in ("name", "behavior", "oracle"):
                 _text(scenario[key])
             if scenario["name"] in names:
                 raise ProtocolError("duplicate_scenario")
             names.add(scenario["name"])
-            _path(scenario["test_path"], test=True)
+            level = scenario.get("test_level", "unit")
+            if level not in TEST_LEVELS:
+                raise ProtocolError("invalid_test_level")
+            _path(scenario["test_path"], test=level == "unit")
+            outcomes = scenario.get("expected_outcomes")
+            if outcomes is not None:
+                _object(outcomes, set(), {"base", "candidate"})
+                for expectation in outcomes.values():
+                    if expectation not in EXPECTED_OUTCOMES:
+                        raise ProtocolError("invalid_expected_outcome")
             paths = _strings(scenario["source_paths"], maximum=240, unique=True)
             if not paths or any(path not in source for path in paths):
                 raise ProtocolError("unknown_source_path")
     else:
-        _strings(output["suggested_test_ids"], pattern=TEST_ID, maximum=512, unique=True)
-        planned = None
+        try:
+            _strings(output["suggested_test_ids"], pattern=TEST_ID, maximum=512, unique=True)
+        except ProtocolError as error:
+            if str(error) == "string_pattern":
+                raise ProtocolError("invalid_suggested_test_id") from None
+            raise
+        scenarios = None
         if "plan" in task["prior"]:
             validate_output(task["prior"]["plan"], {**task, "phase": "plan"})
-            planned = {scenario["test_path"] for scenario in task["prior"]["plan"]["scenarios"]}
+            scenarios = {scenario["test_path"]: scenario for scenario in task["prior"]["plan"]["scenarios"]}
+        unimplemented = output.get("unimplemented_scenarios", [])
+        if unimplemented and scenarios is None:
+            raise ProtocolError("unimplemented_without_plan")
+        accounted = set()
+        for entry in _array(unimplemented, maximum=128):
+            _object(entry, {"name", "reason"})
+            _text(entry["name"])
+            _text(entry["reason"])
+            if entry["name"] not in ({scenario["name"] for scenario in scenarios.values()} if scenarios is not None else ()):
+                raise ProtocolError("unknown_scenario")
+            if entry["name"] in accounted:
+                raise ProtocolError("duplicate_scenario")
+            accounted.add(entry["name"])
         paths = set()
         for item in _array(output["files"], minimum=1, maximum=32):
             _object(item, {"path", "content"})
@@ -311,11 +366,19 @@ def validate_output(output: dict, task: dict) -> None:
             content = _text(item["content"], 128 * 1024)
             if len(content.encode("utf-8")) > 128 * 1024 or not content.endswith("\n"):
                 raise ProtocolError("test_content_bounds")
-            if planned is not None and path not in planned:
-                raise ProtocolError("unplanned_test_path")
+            if scenarios is not None:
+                scenario = scenarios.get(path)
+                if scenario is None:
+                    raise ProtocolError("unplanned_test_path")
+                if scenario.get("test_level", "unit") != "unit":
+                    raise ProtocolError("non_unit_implementation")
             if path in paths or path in source:
                 raise ProtocolError("test_path_collision")
             paths.add(path)
+        if scenarios is not None:
+            for scenario in scenarios.values():
+                if scenario["test_path"] not in paths and scenario["name"] not in accounted:
+                    raise ProtocolError("unaccounted_scenario")
 
 
 def validate_result(raw: bytes, task: dict, request_digest: str) -> dict:

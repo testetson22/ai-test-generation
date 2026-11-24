@@ -96,8 +96,11 @@ def run_task(raw: bytes, *, expected_digest: str | None = None, allow_model_call
             result.update(status="inconclusive", output={}, diagnostic="stage_timeout")
         except ProtocolError as error:
             result.update(status="inconclusive", output={}, diagnostic=sanitize(str(error), (credential,)))
-        except Exception:
-            result.update(status="failed", output={}, diagnostic="harness_failed; live_integration_not_verified")
+        except Exception as error:
+            status_code = getattr(error, "status_code", None)
+            http_status = f":http_{status_code}" if type(status_code) is int and 400 <= status_code <= 599 else ""
+            diagnostic = f"harness_failed:{type(error).__name__}{http_status}; live_integration_not_verified"
+            result.update(status="failed", output={}, diagnostic=sanitize(diagnostic, (credential,)))
     # Known secrets must never appear in metadata, usage, diagnostics, or generated files.
     if credential and _contains_secret(result, credential):
         result.update(status="blocked", output={}, diagnostic="credential_present_in_result")

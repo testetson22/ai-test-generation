@@ -2,6 +2,8 @@
 # explicit build inputs, never local evidence, credentials, Git or virtualenvs.
 **
 !services/generation-worker/pyproject.toml
+!services/generation-worker/requirements-pydantic.in
+!services/generation-worker/requirements-pydantic.lock
 !services/generation-worker/src/atg_generation_worker/__init__.py
 !services/generation-worker/src/atg_generation_worker/__main__.py
 !services/generation-worker/src/atg_generation_worker/harnesses.py
