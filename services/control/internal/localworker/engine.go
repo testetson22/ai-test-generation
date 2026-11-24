@@ -118,7 +118,7 @@ func (w *Worker) inspect(ctx context.Context, name string) (containerState, bool
 }
 
 func (w *Worker) sandboxArgs(name, run, digest, network string, timeout int) []string {
-	return []string{
+	args := []string{
 		"--name", name, "--pull=never", "--image-volume=ignore",
 		"--read-only", "--read-only-tmpfs=false", "--user=65532:65532",
 		"--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -129,10 +129,15 @@ func (w *Worker) sandboxArgs(name, run, digest, network string, timeout int) []s
 		"--tmpfs=/work:rw,nosuid,nodev,size=1536m,mode=1777",
 		"--tmpfs=/tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777",
 		"--log-driver=k8s-file", "--log-opt=max-size=1mb",
-		"--label=io.lightpath.atg.worker=" + workerLabel,
+		"--label=io.lightpath.atg.worker=" + w.profile.WorkerRecipe,
 		"--label=io.lightpath.atg.run=" + run,
 		"--label=io.lightpath.atg.input=" + digest,
 	}
+	if w.profile.TestScope == "unit" {
+		args = append(args, "--env=ATG_TEST_NETWORK_MODE="+w.profile.testNetworkMode())
+		args = append(args, "--env=ATG_SUREFIRE_PROVIDER="+w.profile.SurefireProvider)
+	}
+	return args
 }
 
 func (w *Worker) Ready(ctx context.Context) error {
@@ -166,7 +171,7 @@ func (w *Worker) Ready(ctx context.Context) error {
 		ID     string `json:"Id"`
 		Config struct{ Labels map[string]string }
 	}
-	if json.Unmarshal(raw, &images) != nil || len(images) != 1 || images[0].Config.Labels["io.lightpath.atg.worker"] != workerLabel || canonicalImageID(images[0].ID) == "" {
+	if json.Unmarshal(raw, &images) != nil || len(images) != 1 || images[0].Config.Labels["io.lightpath.atg.worker"] != w.profile.WorkerRecipe || canonicalImageID(images[0].ID) == "" {
 		return fmt.Errorf("worker image identity or recipe label is invalid")
 	}
 	imageID := canonicalImageID(images[0].ID)

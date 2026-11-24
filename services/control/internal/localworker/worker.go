@@ -96,7 +96,7 @@ func (w *Worker) validateRequest(r testgenflow.WorkRequest) error {
 }
 
 func (w *Worker) ResolveSource(ctx context.Context, r testgenflow.WorkRequest) (string, error) {
-	result, err := w.operation(ctx, r, "source", TestArtifact{})
+	result, err := w.operation(ctx, r, "source", TestArtifact{}, w.profile.primarySubject())
 	if err != nil {
 		return "", err
 	}
@@ -127,10 +127,70 @@ func (w *Worker) RunMaven(ctx context.Context, r testgenflow.MavenWorkRequest) (
 			return testgenflow.MavenResult{}, err
 		}
 	}
-	return w.operation(ctx, r.WorkRequest, string(r.Phase), a)
+	if w.profile.ExecutionPair != nil && (r.Phase == testgenflow.MavenPhaseFocusedTests || r.Phase == testgenflow.MavenPhaseFinalVerify) {
+		return w.operationPair(ctx, r, string(r.Phase), a)
+	}
+	return w.operation(ctx, r.WorkRequest, string(r.Phase), a, w.profile.primarySubject())
 }
 
-func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase string, a TestArtifact) (testgenflow.MavenResult, error) {
+// SubjectOutcome records one immutable subject's execution outcome.
+type SubjectOutcome struct {
+	Subject     string `json:"subject"`
+	Commit      string `json:"commit"`
+	Succeeded   bool   `json:"succeeded"`
+	EvidenceRef string `json:"evidence_ref"`
+	Diagnostic  string `json:"diagnostic,omitempty"`
+}
+
+// PairEvidence is the differential phase document: the same admitted test
+// artifact executed against both pinned subjects, with per-subject outcomes.
+type PairEvidence struct {
+	SchemaVersion        string           `json:"schema_version"`
+	Phase                string           `json:"phase"`
+	RunID                string           `json:"run_id"`
+	ProfileDigest        string           `json:"profile_digest"`
+	TestArtifactDigest   string           `json:"test_artifact_digest,omitempty"`
+	PatchDigest          string           `json:"patch_digest,omitempty"`
+	Subjects             []SubjectOutcome `json:"subjects"`
+	Succeeded            bool             `json:"succeeded"`
+	DifferentialObserved bool             `json:"differential_observed"`
+	Diagnostic           string           `json:"diagnostic,omitempty"`
+}
+
+// operationPair executes the same admitted test artifact against both pinned
+// subjects. The phase succeeds when the candidate subject succeeds; the base
+// outcome is recorded either way so a base-failure/candidate-success pair is a
+// successful differential observation rather than a repair trigger.
+func (w *Worker) operationPair(ctx context.Context, r testgenflow.MavenWorkRequest, phase string, a TestArtifact) (testgenflow.MavenResult, error) {
+	subjects := w.profile.executionSubjects()
+	outcomes := make([]SubjectOutcome, 0, len(subjects))
+	for _, subject := range subjects {
+		result, err := w.operation(ctx, r.WorkRequest, phase, a, subject)
+		if err != nil {
+			return testgenflow.MavenResult{}, err
+		}
+		outcomes = append(outcomes, SubjectOutcome{Subject: subject.name, Commit: subject.commit, Succeeded: result.Succeeded, EvidenceRef: result.EvidenceRef, Diagnostic: result.Diagnostic})
+	}
+	base, candidate := outcomes[0], outcomes[1]
+	document := PairEvidence{SchemaVersion: "1", Phase: phase, RunID: r.RunID, ProfileDigest: w.ProfileDigest(), TestArtifactDigest: r.TestArtifactDigest, Subjects: outcomes, Succeeded: candidate.Succeeded, DifferentialObserved: !base.Succeeded && candidate.Succeeded}
+	if len(a.Files) > 0 {
+		document.PatchDigest = digestJSON(a.PatchContent())
+	}
+	if !candidate.Succeeded {
+		document.Diagnostic = "candidate subject failed; inspect per-subject evidence"
+	}
+	content, err := json.Marshal(document)
+	if err != nil {
+		return testgenflow.MavenResult{}, err
+	}
+	ref, err := w.put(ctx, content)
+	if err != nil {
+		return testgenflow.MavenResult{}, err
+	}
+	return testgenflow.MavenResult{Succeeded: document.Succeeded, EvidenceRef: ref, Diagnostic: document.Diagnostic}, nil
+}
+
+func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase string, a TestArtifact, subject executionSubject) (testgenflow.MavenResult, error) {
 	// Serialize workload memory, not health checks or cancellation. Acquisition
 	// observes cancellation instead of waiting indefinitely on a mutex.
 	select {
@@ -152,10 +212,10 @@ func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase
 		return testgenflow.MavenResult{}, fmt.Errorf("worker Ready must succeed before operations")
 	}
 	input := digestJSON(struct {
-		Request               testgenflow.WorkRequest
-		Phase, Profile, Image string
-	}{r, phase, w.ProfileDigest(), imageID})
-	name := containerName(r.IdempotencyKey)
+		Request                                testgenflow.WorkRequest
+		Phase, Profile, Image, Subject, Commit string
+	}{r, phase, w.ProfileDigest(), imageID, subject.name, subject.commit})
+	name := containerName(r.IdempotencyKey + subjectContainerSuffix(subject.name))
 	state, exists, err := w.inspect(ctx, name)
 	if err != nil {
 		return testgenflow.MavenResult{}, unknown("worker inspection failed", err)
@@ -164,23 +224,19 @@ func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase
 		if r.ReconcileOnly {
 			return testgenflow.MavenResult{}, unknown("journaled worker is missing; refusing to recreate", nil)
 		}
-		selector := ""
-		if phase == "focused_tests" {
-			var classes []string
-			for _, f := range a.Files {
-				classes = append(classes, strings.ReplaceAll(strings.TrimSuffix(strings.TrimPrefix(f.Path, "src/test/java/"), ".java"), "/", "."))
-			}
-			selector = strings.Join(classes, ",")
-		}
+		selector := w.profile.testSelector(phase, a)
 		args := append([]string{"create"}, w.sandboxArgs(name, runLabel(r.RunID), input, "bridge", w.profile.DeadlineSeconds+w.profile.RetentionSeconds)...)
-		args = append(args, imageID, "run", phase, selector, w.profile.RepositoryURL, w.profile.Commit)
+		if subject.name != "" {
+			args = append(args, "--label=io.lightpath.atg.subject="+subject.name)
+		}
+		args = append(args, imageID, "run", phase, selector, w.profile.RepositoryURL, subject.commit)
 		_, createErr := w.exec(ctx, nil, 4096, args...)
 		state, exists, err = w.inspect(ctx, name)
 		if err != nil || !exists {
 			return testgenflow.MavenResult{}, unknown("worker creation acknowledgement is unknown", errorsJoin(createErr, err))
 		}
 	}
-	if state.Config.Labels["io.lightpath.atg.worker"] != workerLabel || state.Config.Labels["io.lightpath.atg.run"] != runLabel(r.RunID) || state.Config.Labels["io.lightpath.atg.input"] != input || state.Image != imageID {
+	if state.Config.Labels["io.lightpath.atg.worker"] != w.profile.WorkerRecipe || state.Config.Labels["io.lightpath.atg.run"] != runLabel(r.RunID) || state.Config.Labels["io.lightpath.atg.input"] != input || state.Config.Labels["io.lightpath.atg.subject"] != subject.name || state.Image != imageID {
 		return testgenflow.MavenResult{}, unknown("named worker input or image identity conflict", nil)
 	}
 	if state.State.Status == "created" || state.State.Status == "configured" {
@@ -206,7 +262,7 @@ func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase
 		}
 		value := strings.TrimSpace(string(status))
 		if code, parseErr := strconv.Atoi(value); parseErr == nil {
-			result, evidenceErr := w.collect(ctx, state, input, phase, code, a, r.TestArtifactDigest, false)
+			result, evidenceErr := w.collect(ctx, state, input, phase, code, a, r.TestArtifactDigest, false, subject)
 			if evidenceErr != nil {
 				return testgenflow.MavenResult{}, unknown("completed worker evidence retention failed", evidenceErr)
 			}
@@ -236,6 +292,13 @@ func (w *Worker) operation(ctx context.Context, r testgenflow.WorkRequest, phase
 			return testgenflow.MavenResult{}, unknown("worker disappeared while observing", err)
 		}
 	}
+}
+
+func subjectContainerSuffix(subject string) string {
+	if subject == "" {
+		return ""
+	}
+	return ":" + subject
 }
 
 func errorsJoin(a, b error) error {

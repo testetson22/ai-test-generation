@@ -5,7 +5,13 @@ export PATH=/opt/java/openjdk/bin:/usr/share/maven/bin:/usr/local/sbin:/usr/loca
 export JAVA_HOME=/opt/java/openjdk HOME=/work/home TMPDIR=/work/tmp LANG=C.UTF-8
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
 export MAVEN_OPTS='-Xmx512m -XX:MaxMetaspaceSize=256m -Djava.io.tmpdir=/work/tmp -Duser.home=/work/home'
-unset BASH_ENV ENV CDPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS
+test_network_mode="${ATG_TEST_NETWORK_MODE:-online}"
+surefire_provider="${ATG_SUREFIRE_PROVIDER:-}"
+case "$test_network_mode" in offline|online) ;; *) exit 64 ;; esac
+if test "$test_network_mode" = offline; then
+  [[ "$surefire_provider" == org.apache.maven.surefire:surefire-junit-platform:2.22.2 ]]
+fi
+unset ATG_TEST_NETWORK_MODE ATG_SUREFIRE_PROVIDER BASH_ENV ENV CDPATH JAVA_TOOL_OPTIONS JDK_JAVA_OPTIONS _JAVA_OPTIONS
 
 case "${1:-}" in
   probe)
@@ -20,6 +26,9 @@ case "${1:-}" in
     [[ "$java_version" == *'version "17.'* ]]
     printf '%s\n' "$java_version"
     mvn -version
+    if test "$test_network_mode" = offline; then
+      unshare --user --map-root-user --net /bin/bash -c 'shopt -s nullglob; interfaces=(/sys/class/net/*); test "${#interfaces[@]}" -eq 1 && test "${interfaces[0]##*/}" = lo' >/dev/null
+    fi
     exit 0 ;;
   status)
     if test -f /work/out/exit; then cat /work/out/exit
@@ -79,7 +88,7 @@ esac
 
 phase="$2"; selector="${3:-}"; repository_url="${4:-}"; source_commit="${5:-}"
 case "$phase" in source|package|focused_tests|verify) ;; *) exit 64 ;; esac
-[[ "$repository_url" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_./-]+$ ]]
+[[ "$repository_url" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_./-]+$ || "$repository_url" =~ ^http://(host\.containers\.internal|localhost|127\.0\.0\.1)(:[0-9]+)?/[A-Za-z0-9_./-]+$ ]]
 [[ "$repository_url" != *'..'* ]]
 [[ "$source_commit" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]]
 mkdir -p /work/{home,tmp,out,repo}
@@ -95,7 +104,7 @@ set +e
   object_format=sha1
   if test "${#source_commit}" = 64; then object_format=sha256; fi
   git -c init.templateDir= init -q --object-format="$object_format"
-  git -c credential.helper= -c core.hooksPath=/dev/null -c protocol.allow=never -c protocol.https.allow=always -c http.followRedirects=false fetch -q --depth=1 "$repository_url" "$source_commit"
+  git -c credential.helper= -c core.hooksPath=/dev/null -c protocol.allow=never -c protocol.https.allow=always -c protocol.http.allow=always -c http.followRedirects=false fetch -q --depth=1 "$repository_url" "$source_commit"
   git -c core.hooksPath=/dev/null checkout -q --detach FETCH_HEAD
   test "$(git rev-parse HEAD)" = "$source_commit"
   git rev-parse HEAD HEAD^{tree} > /work/out/source-identity
@@ -106,12 +115,25 @@ set +e
     # Fresh checkout every operation, with no Maven cache or shared volume.
     if test "$phase" != package; then IFS= read -r _ < /work/input; fi
     common=(-B -ntp -s /work/settings.xml -gs /work/settings.xml -Dstyle.color=never -DfailIfNoTests=true '-DargLine=-Xmx512m -XX:MaxMetaspaceSize=256m' -DforkCount=1 -DreuseForks=true)
+    run_selected_unit_tests() {
+      [[ "$selector" =~ ^[A-Za-z0-9_.,#+]+$ ]]
+      if test "$test_network_mode" = offline; then
+        # Resolve the pinned source's Maven artifacts before isolating test execution.
+        mvn "${common[@]}" -DincludeScope=test \
+          -Dartifact="$surefire_provider" \
+          org.apache.maven.plugins:maven-dependency-plugin:3.6.1:go-offline \
+          org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve \
+          org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve-plugins \
+          org.apache.maven.plugins:maven-dependency-plugin:3.6.1:get
+        unshare --user --map-root-user --net mvn -o "${common[@]}" clean test "-Dtest=$selector" -Dsurefire.failIfNoSpecifiedTests=true
+      else
+        mvn "${common[@]}" clean test "-Dtest=$selector" -Dsurefire.failIfNoSpecifiedTests=true
+      fi
+    }
     case "$phase" in
-      package) mvn "${common[@]}" clean package ;;
-      focused_tests)
-        [[ "$selector" =~ ^[A-Za-z0-9_.,]+$ ]]
-        mvn "${common[@]}" clean test "-Dtest=$selector" -Dsurefire.failIfNoSpecifiedTests=true ;;
-      verify) mvn "${common[@]}" clean verify ;;
+      package) if test -n "$selector"; then run_selected_unit_tests; else mvn "${common[@]}" clean package; fi ;;
+      focused_tests) run_selected_unit_tests ;;
+      verify) if test -n "$selector"; then run_selected_unit_tests; else mvn "${common[@]}" clean verify; fi ;;
     esac
   fi
 ) > /work/out/command.log 2>&1 &

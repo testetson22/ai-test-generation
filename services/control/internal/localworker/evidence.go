@@ -28,6 +28,7 @@ type Evidence struct {
 	ProfileDigest      string            `json:"profile_digest"`
 	ImageID            string            `json:"image_id"`
 	SourceCommit       string            `json:"source_commit"`
+	Subject            string            `json:"subject,omitempty"`
 	Phase              string            `json:"phase"`
 	PatchDigest        string            `json:"patch_digest,omitempty"`
 	TestArtifactDigest string            `json:"test_artifact_digest,omitempty"`
@@ -166,7 +167,7 @@ func summarize(files map[string][]byte, expected []string) (report.Summary, erro
 	return combined, nil
 }
 
-func (w *Worker) collect(ctx context.Context, state containerState, input, phase string, code int, a TestArtifact, testArtifactDigest string, partial bool) (testgenflow.MavenResult, error) {
+func (w *Worker) collect(ctx context.Context, state containerState, input, phase string, code int, a TestArtifact, testArtifactDigest string, partial bool, subject executionSubject) (testgenflow.MavenResult, error) {
 	args := []string{"exec", state.ID, "/bin/bash", "/opt/atg/worker.sh", "collect"}
 	if partial {
 		args = append(args, "partial")
@@ -179,7 +180,7 @@ func (w *Worker) collect(ctx context.Context, state containerState, input, phase
 	if err != nil {
 		return testgenflow.MavenResult{}, err
 	}
-	e := Evidence{SchemaVersion: "1", WorkerID: state.ID, InputDigest: input, ProfileDigest: w.ProfileDigest(), ImageID: state.Image, SourceCommit: w.profile.Commit, Phase: phase, ExitCode: code, Partial: partial, Artifacts: map[string]string{}}
+	e := Evidence{SchemaVersion: "1", WorkerID: state.ID, InputDigest: input, ProfileDigest: w.ProfileDigest(), ImageID: state.Image, SourceCommit: subject.commit, Subject: subject.name, Phase: phase, ExitCode: code, Partial: partial, Artifacts: map[string]string{}}
 	if len(a.Files) > 0 {
 		e.PatchDigest = artifact.Digest(a.PatchContent())
 		e.TestArtifactDigest = testArtifactDigest
@@ -196,7 +197,7 @@ func (w *Worker) collect(ctx context.Context, state containerState, input, phase
 		}
 		e.Artifacts[name] = ref
 	}
-	validSource := strings.HasPrefix(string(files["source-identity"]), w.profile.Commit+"\n") && len(files["source.tar.gz"]) > 0 && len(files["toolchain"]) > 0
+	validSource := strings.HasPrefix(string(files["source-identity"]), subject.commit+"\n") && len(files["source.tar.gz"]) > 0 && len(files["toolchain"]) > 0
 	actualCode, codeErr := strconv.Atoi(strings.TrimSpace(string(files["exit"])))
 	if !partial && (codeErr != nil || actualCode != code) {
 		return testgenflow.MavenResult{}, fmt.Errorf("worker exit record missing or inconsistent")
@@ -211,7 +212,7 @@ func (w *Worker) collect(ctx context.Context, state containerState, input, phase
 			sort.Strings(e.ExpectedTestIDs)
 		}
 		e.Summary, err = summarize(files, e.ExpectedTestIDs)
-		minimum := 121
+		minimum := len(w.profile.ExpectedTestIDs())
 		if phase == "focused_tests" {
 			minimum = len(a.ExpectedTestIDs)
 		} else if phase == "verify" {
@@ -295,7 +296,7 @@ func (w *Worker) receipt(ctx context.Context, state containerState, input string
 	if err = strictJSON(content, &e); err != nil {
 		return e, "", err
 	}
-	if e.SchemaVersion != "1" || e.WorkerID != state.ID || e.InputDigest != input || e.ProfileDigest != w.ProfileDigest() || e.ImageID != state.Image || e.SourceCommit != w.profile.Commit || (len(e.Artifacts) == 0 && !e.Partial) {
+	if e.SchemaVersion != "1" || e.WorkerID != state.ID || e.InputDigest != input || e.ProfileDigest != w.ProfileDigest() || e.ImageID != state.Image || !w.validSubjectEvidence(e) || (len(e.Artifacts) == 0 && !e.Partial) {
 		return e, "", fmt.Errorf("retained worker receipt identity mismatch")
 	}
 	for _, digest := range e.Artifacts {
@@ -328,7 +329,7 @@ func (w *Worker) containers(ctx context.Context, runID string) ([]containerState
 	if runID == "" {
 		return nil, fmt.Errorf("run identity required")
 	}
-	raw, err := w.exec(ctx, nil, 128*1024, "ps", "--all", "--filter=label=io.lightpath.atg.worker="+workerLabel, "--filter=label=io.lightpath.atg.run="+runLabel(runID), "--format=json")
+	raw, err := w.exec(ctx, nil, 128*1024, "ps", "--all", "--filter=label=io.lightpath.atg.worker="+w.profile.WorkerRecipe, "--filter=label=io.lightpath.atg.run="+runLabel(runID), "--format=json")
 	if err != nil {
 		return nil, err
 	}
@@ -347,7 +348,7 @@ func (w *Worker) containers(ctx context.Context, runID string) ([]containerState
 		if !exists {
 			return nil, unknown("run worker disappeared", nil)
 		}
-		if state.Config.Labels["io.lightpath.atg.worker"] != workerLabel || state.Config.Labels["io.lightpath.atg.run"] != runLabel(runID) {
+		if state.Config.Labels["io.lightpath.atg.worker"] != w.profile.WorkerRecipe || state.Config.Labels["io.lightpath.atg.run"] != runLabel(runID) {
 			return nil, fmt.Errorf("run worker ownership mismatch")
 		}
 		states = append(states, state)
@@ -365,19 +366,59 @@ func (w *Worker) ConfirmOperations(ctx context.Context, runID string, keys []str
 		if key == "" {
 			return fmt.Errorf("operation key required")
 		}
-		state, exists, err := w.inspect(ctx, containerName(key))
-		if err != nil || !exists {
-			return unknown("journaled worker is missing during cancellation", err)
+		names := []string{containerName(key)}
+		if w.profile.ExecutionPair != nil {
+			names = []string{containerName(key + ":base"), containerName(key + ":candidate")}
 		}
-		if state.Config.Labels["io.lightpath.atg.worker"] != workerLabel || state.Config.Labels["io.lightpath.atg.run"] != runLabel(runID) {
-			return unknown("journaled worker ownership conflict", nil)
+		confirmed := false
+		for _, name := range names {
+			state, exists, err := w.inspect(ctx, name)
+			if err != nil {
+				return unknown("journaled worker is missing during cancellation", err)
+			}
+			if exists && state.Config.Labels["io.lightpath.atg.worker"] == w.profile.WorkerRecipe && state.Config.Labels["io.lightpath.atg.run"] == runLabel(runID) {
+				confirmed = true
+			}
+		}
+		if !confirmed {
+			return unknown("journaled worker is missing during cancellation", nil)
 		}
 	}
 	return nil
 }
 
+// validSubjectEvidence binds retained evidence to the profile's immutable
+// subject set: single-subject profiles pin the profile commit with no subject
+// name; pair profiles require a named subject matching its pinned commit.
+func (w *Worker) validSubjectEvidence(e Evidence) bool {
+	if w.profile.ExecutionPair == nil {
+		return e.Subject == "" && e.SourceCommit == w.profile.Commit
+	}
+	switch e.Subject {
+	case "base":
+		return e.SourceCommit == w.profile.ExecutionPair.BaseCommit
+	case "candidate":
+		return e.SourceCommit == w.profile.ExecutionPair.CandidateCommit
+	}
+	return false
+}
+
+// subjectFromState reconstructs a container's execution subject from its label.
+func (w *Worker) subjectFromState(state containerState) executionSubject {
+	if w.profile.ExecutionPair != nil {
+		switch state.Config.Labels["io.lightpath.atg.subject"] {
+		case "base":
+			return executionSubject{name: "base", commit: w.profile.ExecutionPair.BaseCommit}
+		case "candidate":
+			return executionSubject{name: "candidate", commit: w.profile.ExecutionPair.CandidateCommit}
+		}
+		return w.profile.primarySubject()
+	}
+	return executionSubject{name: "", commit: w.profile.Commit}
+}
+
 func (w *Worker) cancelContainer(ctx context.Context, state containerState, input string) error {
-	result, collectErr := w.collect(ctx, state, input, "cancelled", -1, TestArtifact{}, "", true)
+	result, collectErr := w.collect(ctx, state, input, "cancelled", -1, TestArtifact{}, "", true, w.subjectFromState(state))
 	if collectErr == nil {
 		if err := w.seal(ctx, state.ID, result.EvidenceRef, true); err == nil {
 			return nil

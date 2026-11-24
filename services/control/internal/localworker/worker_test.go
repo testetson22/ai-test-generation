@@ -19,6 +19,8 @@ import (
 )
 
 const profilePath = "../../../../workers/java17-maven/profile.json"
+const unitProfilePath = "../../../../workers/java17-maven/profile-unit.json"
+const onlineUnitProfilePath = "../../../../workers/java17-maven/profile-unit-online.json"
 const unitTestArtifact = `{
   "schema_version": "1",
   "files": [{"path":"src/test/java/com/redhat/lightwell/atg/ArithmeticSmokeTest.java","content":"package com.redhat.lightwell.atg;\nclass ArithmeticSmokeTest {}\n"}],
@@ -29,12 +31,12 @@ const unitTestArtifact = `{
 // the independently versioned workload profile outside this module.
 func unitProfile(t *testing.T) Profile {
 	t.Helper()
-	methods := make([]string, 121)
+	methods := make([]string, 125)
 	for i := range methods {
 		methods[i] = fmt.Sprintf("behavior%d", i)
 	}
 	p := Profile{
-		SchemaVersion: "1", ID: "ssc-java17-maven", Version: "1.0.0", RepositoryURL: SourceURL,
+		SchemaVersion: "1", ID: "ssc-java17-maven", Version: "1.0.2", RepositoryURL: SourceURL,
 		Commit: SourceCommit, Subdirectory: ".", NetworkPolicy: "public-egress-development",
 		BaseImage: BaseImage, WorkerRecipe: workerLabel, RetentionSeconds: 1800, DeadlineSeconds: 600,
 		Sandbox:       Sandbox{MemoryMiB: 3072, WorkspaceMiB: 1536, TemporaryMiB: 64, PIDs: 256, CPUs: 2, FileMiB: 512},
@@ -59,6 +61,663 @@ func TestConfiguredWorkloadProfileArtifact(t *testing.T) {
 	}
 	if _, err := LoadProfile(path); err != nil {
 		t.Fatalf("invalid configured workload profile: %v", err)
+	}
+}
+
+func TestUnitOnlyProfileSelectsOnlyTheApprovedTestClass(t *testing.T) {
+	p, err := LoadProfile(unitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const baselineClass = "com.redhat.lightwell.service.StatementImportServiceTest"
+	baselineSelector := baselineClass + "#shouldHandleEmptyStatement+shouldImportDepositsAndWithdrawals+shouldSkipTransactionsWithMissingAmount+shouldSkipTransactionsWithMissingType+shouldThrowNotFoundWhenAccountMissing+shouldThrowRuntimeExceptionForMalformedXml+shouldUseDefaultDescriptionWhenMissing"
+	if p.Version != "1.0.6" || p.TestScope != "unit" || p.TestNetworkMode != "offline" || p.ContextDiscovery == nil || p.ContextDiscovery.MaxFiles != 128 || !slices.Equal(p.ContextDiscovery.SourceRoots, []string{"src/main/java"}) || !slices.Equal(p.ContextDiscovery.UnitTestRoots, []string{"src/test/java"}) || !slices.Equal(p.DependencyPreparationGoals, []string{"org.apache.maven.plugins:maven-dependency-plugin:3.6.1:go-offline", "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve", "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve-plugins", "org.apache.maven.plugins:maven-dependency-plugin:3.6.1:get"}) || p.SurefireProvider != "org.apache.maven.surefire:surefire-junit-platform:2.22.2" || len(p.ExpectedTestIDs()) != 7 || p.testSelector("package", TestArtifact{}) != baselineSelector {
+		t.Fatalf("unit profile does not select its explicit baseline: %#v", p)
+	}
+	generated := TestArtifact{Files: []TestFile{{Path: "src/test/java/com/redhat/lightwell/service/StatementImportSecurityTest.java"}}, ExpectedTestIDs: []string{
+		"com.redhat.lightwell.service.StatementImportSecurityTest#doesNotExposeExternalData",
+		"com.redhat.lightwell.service.StatementImportSecurityTest#rejectsMalformedInput",
+	}}
+	generatedSelector := "com.redhat.lightwell.service.StatementImportSecurityTest#doesNotExposeExternalData+rejectsMalformedInput"
+	if got, want := p.testSelector("focused_tests", generated), generatedSelector; got != want {
+		t.Fatalf("focused selector = %q, want %q", got, want)
+	}
+	if got, want := p.testSelector("verify", generated), generatedSelector+","+baselineSelector; got != want {
+		t.Fatalf("final selector = %q, want %q", got, want)
+	}
+	if got := p.testSelector("verify", TestArtifact{}); got != baselineSelector {
+		t.Fatalf("unit verify selector = %q", got)
+	}
+}
+
+func TestUnitProfileNetworkModeIsExplicitAndDigestBound(t *testing.T) {
+	offline, err := LoadProfile(unitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := LoadProfile(onlineUnitProfilePath)
+	if err != nil || p.testNetworkMode() != "online" || p.Digest == offline.Digest {
+		t.Fatalf("online mode was not accepted as a distinct profile identity: %v", err)
+	}
+	raw, err := os.ReadFile(onlineUnitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := strings.Replace(string(raw), `"test_network_mode": "online"`, `"test_network_mode": "unrestricted"`, 1)
+	if _, err = DecodeProfile([]byte(invalid)); err == nil {
+		t.Fatal("profile accepted an unrecognized test network mode")
+	}
+	worker := &Worker{profile: p}
+	if args := worker.sandboxArgs("name", "run", "digest", "bridge", 120); !slices.Contains(args, "--env=ATG_TEST_NETWORK_MODE=online") || !slices.Contains(args, "--env=ATG_SUREFIRE_PROVIDER="+p.SurefireProvider) {
+		t.Fatalf("online mode or test provider was not bound into the worker environment: %v", args)
+	}
+}
+
+func TestUnitProfileRejectsBroadMavenGoal(t *testing.T) {
+	raw, err := os.ReadFile(unitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := strings.Replace(string(raw), `"package": ["clean", "test"]`, `"package": ["clean", "package"]`, 1)
+	if changed == string(raw) {
+		t.Fatal("test did not mutate the unit profile's package goal")
+	}
+	if _, err := DecodeProfile([]byte(changed)); err == nil {
+		t.Fatal("unit-only profile accepted the broad package goal")
+	}
+}
+
+const pairProfilePath = "../../../../workers/java17-maven/profile-unit-pair-online.json"
+const cvePairProfilePath = "../../../../workers/java17-maven/profile-unit-pair-cve-online.json"
+
+const pairCandidateCommit = "01a18a1b40e151ffcc1d7bef86bf335f87999750"
+
+func pairProfile(t *testing.T) Profile {
+	t.Helper()
+	p := Profile{
+		SchemaVersion: "1", ID: "ssc-java17-maven", Version: "1.0.7", RepositoryURL: SourceURL,
+		Commit: SourceCommit, Subdirectory: ".", NetworkPolicy: "public-egress-development",
+		BaseImage: BaseImage, WorkerRecipe: workerLabel, RetentionSeconds: 1800, DeadlineSeconds: 600,
+		TestScope:       "unit",
+		TestNetworkMode: "online",
+		DependencyPreparationGoals: []string{
+			"org.apache.maven.plugins:maven-dependency-plugin:3.6.1:go-offline",
+			"org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve",
+			"org.apache.maven.plugins:maven-dependency-plugin:3.6.1:resolve-plugins",
+			"org.apache.maven.plugins:maven-dependency-plugin:3.6.1:get",
+		},
+		SurefireProvider: "org.apache.maven.surefire:surefire-junit-platform:2.22.2",
+		ContextDiscovery: &ContextDiscovery{SourceRoots: []string{"src/main/java"}, UnitTestRoots: []string{"src/test/java"}, SourceExtensions: []string{".java"}, UnitTestSuffix: "Test.java", BuildFiles: []string{"pom.xml"}, MaxFiles: 128},
+		ExecutionPair:    &ExecutionPair{BaseCommit: SourceCommit, CandidateCommit: pairCandidateCommit},
+		Sandbox:          Sandbox{MemoryMiB: 3072, WorkspaceMiB: 1536, TemporaryMiB: 64, PIDs: 256, CPUs: 2, FileMiB: 512},
+		MavenGoals:       map[string][]string{"package": {"clean", "test"}, "focused_tests": {"clean", "test"}, "verify": {"clean", "test"}},
+		BaselineTests: map[string][]string{"com.redhat.lightwell.service.StatementImportServiceTest": {
+			"shouldImportDepositsAndWithdrawals", "shouldThrowNotFoundWhenAccountMissing", "shouldThrowRuntimeExceptionForMalformedXml",
+			"shouldHandleEmptyStatement", "shouldSkipTransactionsWithMissingType", "shouldSkipTransactionsWithMissingAmount", "shouldUseDefaultDescriptionWhenMissing"}},
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err = DecodeProfile(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func pairFixture(t *testing.T) (*Worker, testgenflow.WorkRequest, *memoryStore) {
+	t.Helper()
+	p := pairProfile(t)
+	s := &memoryStore{objects: map[string][]byte{}}
+	w, err := New(Config{Profile: p, Artifacts: s})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.imageID = "sha256:" + strings.Repeat("a", 64)
+	if _, err = s.Put(context.Background(), p.raw); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := s.Put(context.Background(), boundProfile(p, w.imageID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.boundDigest.Store(bound.Digest)
+	r := testgenflow.WorkRequest{RunID: "worker-pair-test-run", IdempotencyKey: "worker-pair-test-run:source", Request: testgenflow.Request{RepositoryURL: SourceURL, Revision: SourceCommit, BaseBranch: "main", Subdirectory: ".", ProfileID: p.ID, ProfileVersion: p.Version, ProfileDigest: w.ProfileDigest(), InputMode: "artifact_input", CompletionMode: "patch_only"}}
+	return w, r, s
+}
+
+func TestPairProfilePinsTwoImmutableSubjects(t *testing.T) {
+	p, err := LoadProfile(pairProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Version != "1.0.7" || p.ExecutionPair == nil || p.ExecutionPair.BaseCommit != SourceCommit || p.ExecutionPair.CandidateCommit != pairCandidateCommit || p.TestNetworkMode != "online" {
+		t.Fatalf("pair profile does not pin its immutable subjects: %#v", p)
+	}
+	raw, err := os.ReadFile(pairProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func([]byte) []byte{
+		"candidate equals base":  func(b []byte) []byte { return bytes.Replace(b, []byte(pairCandidateCommit), []byte(SourceCommit), 1) },
+		"candidate not a commit": func(b []byte) []byte { return bytes.Replace(b, []byte(pairCandidateCommit), []byte("not-a-commit"), 1) },
+		"pair without version": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`"version": "1.0.7"`), []byte(`"version": "1.0.6"`), 1)
+		},
+		"pair without base match": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`"base_commit": "`+SourceCommit+`"`), []byte(`"base_commit": "`+pairCandidateCommit+`"`), 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeProfile(mutate(raw)); err == nil {
+				t.Fatal("pair profile accepted an invalid execution pair")
+			}
+		})
+	}
+	online, err := os.ReadFile(onlineUnitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPair := bytes.Replace(online, []byte(`"test_network_mode": "online",`), []byte(`"test_network_mode": "online", "execution_pair": {"base_commit": "`+SourceCommit+`", "candidate_commit": "`+pairCandidateCommit+`"},`), 1)
+	if _, err := DecodeProfile(withPair); err == nil {
+		t.Fatal("non-pair profile version accepted an execution pair")
+	}
+}
+
+func TestCVEPairProfilePinsForkRepositoryAndFixCandidate(t *testing.T) {
+	p, err := LoadProfile(cvePairProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Version != "1.0.8" || p.RepositoryURL != "http://host.containers.internal:8090/development/spring-boot-example-application.git" || p.ExecutionPair.BaseCommit != SourceCommit || p.ExecutionPair.CandidateCommit != "518440bd30e5a2b5760861e7709e83963461fe8f" {
+		t.Fatalf("local CVE pair profile did not retain its pins: %#v", p)
+	}
+	raw, err := os.ReadFile(cvePairProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, mutate := range map[string]func([]byte) []byte{
+		"remote http host": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`http://host.containers.internal:8090`), []byte(`http://git.example`), 1)
+		},
+		"credential url": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`http://host.containers.internal:8090`), []byte(`http://token@host.containers.internal:8090`), 1)
+		},
+		"pair on old version": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`"version": "1.0.8"`), []byte(`"version": "1.0.7"`), 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeProfile(mutate(raw)); err == nil {
+				t.Fatal("local CVE pair profile accepted an invalid remote or version combination")
+			}
+		})
+	}
+	fork := bytes.Replace(raw,
+		[]byte(`http://host.containers.internal:8090/development/spring-boot-example-application.git`),
+		[]byte(`https://github.com/example/spring-boot-example-application`), 1)
+	if p, err = DecodeProfile(fork); err != nil || p.RepositoryURL != "https://github.com/example/spring-boot-example-application" {
+		t.Fatalf("https fork remote rejected for a v1.0.8 pair profile: %v", err)
+	}
+}
+
+func TestCVEPairProfilePinsForkRepositoryAndFixCandidateLegacy(t *testing.T) {
+	raw, err := os.ReadFile(pairProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fork := bytes.Replace(raw,
+		[]byte(`"version": "1.0.7"`),
+		[]byte(`"version": "1.0.8"`), 1)
+	fork = bytes.Replace(fork,
+		[]byte(`"repository_url": "https://github.com/lzspangler/spring-boot-example-application"`),
+		[]byte(`"repository_url": "https://github.com/example/spring-boot-example-application"`), 1)
+	fork = bytes.Replace(fork,
+		[]byte(pairCandidateCommit),
+		[]byte("518440bd30e5a2b5760861e7709e83963461fe8f"), 1)
+	p, err := DecodeProfile(fork)
+	if err != nil {
+		t.Fatalf("CVE fix pair profile rejected: %v", err)
+	}
+	if p.Version != "1.0.8" || p.RepositoryURL != "https://github.com/example/spring-boot-example-application" || p.ExecutionPair.CandidateCommit != "518440bd30e5a2b5760861e7709e83963461fe8f" {
+		t.Fatalf("CVE fix pair profile did not retain its pins: %#v", p)
+	}
+	for name, mutate := range map[string]func([]byte) []byte{
+		"fork url on old version": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`"version": "1.0.8"`), []byte(`"version": "1.0.7"`), 1)
+		},
+		"fork url without pair": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`"test_network_mode": "online",`), []byte(`"test_network_mode": "online", "execution_pair": null,`), 1)
+		},
+		"credential url": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`https://github.com/example/spring-boot-example-application`), []byte(`https://token@github.com/example/spring-boot-example-application`), 1)
+		},
+		"non https url": func(b []byte) []byte {
+			return bytes.Replace(b, []byte(`https://github.com/example/spring-boot-example-application`), []byte(`http://github.com/example/spring-boot-example-application`), 1)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DecodeProfile(mutate(fork)); err == nil {
+				t.Fatal("CVE fix pair profile accepted an invalid fork or version combination")
+			}
+		})
+	}
+}
+
+type pairJob struct {
+	state   containerState
+	files   map[string][]byte
+	status  string
+	receipt string
+}
+
+type pairEngine struct {
+	t               *testing.T
+	jobs            map[string]*pairJob
+	filesBySubject  map[string]map[string][]byte
+	statusBySubject map[string]string
+	calls           [][]string
+	creates         int
+}
+
+func (f *pairEngine) run(ctx context.Context, stdin []byte, _ int64, args ...string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	f.calls = append(f.calls, slices.Clone(args))
+	key := strings.Join(args, " ")
+	execID := args[1]
+	if args[0] == "exec" && args[1] == "-i" {
+		execID = args[2]
+	}
+	switch {
+	case strings.HasPrefix(key, "container exists "):
+		if _, ok := f.jobs[args[2]]; !ok {
+			return nil, &engineError{code: 1}
+		}
+		return nil, nil
+	case strings.HasPrefix(key, "container inspect "):
+		job, ok := f.jobs[args[2]]
+		if !ok {
+			return json.Marshal([]containerState{})
+		}
+		return json.Marshal([]containerState{job.state})
+	case args[0] == "create":
+		f.creates++
+		name := args[2]
+		subject := ""
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--label=io.lightpath.atg.subject=") {
+				subject = strings.TrimPrefix(arg, "--label=io.lightpath.atg.subject=")
+			}
+		}
+		job := &pairJob{files: f.filesBySubject[subject], status: f.statusBySubject[subject]}
+		job.state = containerState{ID: name, Image: args[len(args)-6]}
+		job.state.State.Status = "created"
+		job.state.Config.Labels = map[string]string{}
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--label=") {
+				parts := strings.SplitN(strings.TrimPrefix(arg, "--label="), "=", 2)
+				job.state.Config.Labels[parts[0]] = parts[1]
+			}
+		}
+		f.jobs[name] = job
+		return []byte(job.state.ID), nil
+	case args[0] == "start":
+		job := f.jobs[args[1]]
+		job.state.State.Status = "running"
+		job.state.State.Running = true
+		job.state.State.StartedAt = time.Now()
+		return []byte(job.state.ID), nil
+	case args[0] == "exec" && args[len(args)-1] == "status":
+		job := f.jobs[execID]
+		if job.status != "" {
+			return []byte(job.status), nil
+		}
+		return []byte("0\n"), nil
+	case args[0] == "exec" && (args[len(args)-1] == "collect" || args[len(args)-1] == "partial"):
+		return bundle(f.t, f.jobs[execID].files), nil
+	case args[0] == "exec" && (args[len(args)-1] == "seal" || args[len(args)-1] == "cancel"):
+		job := f.jobs[execID]
+		job.receipt = strings.TrimSpace(string(stdin))
+		job.state.State.Running = false
+		job.state.State.Status = "exited"
+		_ = json.Unmarshal(job.files["exit"], &job.state.State.ExitCode)
+		return nil, nil
+	case args[0] == "logs":
+		return []byte("ATG_RECEIPT=" + f.jobs[args[1]].receipt + "\n"), nil
+	case args[0] == "ps":
+		rows := []map[string]string{}
+		for _, job := range f.jobs {
+			rows = append(rows, map[string]string{"Id": job.state.ID})
+		}
+		return json.Marshal(rows)
+	case args[0] == "rm":
+		delete(f.jobs, args[1])
+		return nil, nil
+	case args[0] == "stop":
+		job := f.jobs[args[3]]
+		job.state.State.Running = false
+		job.state.State.Status = "exited"
+		job.state.State.ExitCode = 137
+		return nil, nil
+	default:
+		f.t.Fatalf("unexpected engine command %v", args)
+		return nil, nil
+	}
+}
+
+func pairSubjectFiles(commit string, failing bool, expected []string) map[string][]byte {
+	var xml strings.Builder
+	xml.WriteString("<testsuite>")
+	for i, id := range expected {
+		parts := strings.Split(id, "#")
+		fmt.Fprintf(&xml, `<testcase classname="%s" name="%s">`, parts[0], parts[1])
+		if failing && i == 0 {
+			xml.WriteString("<failure/>")
+		}
+		xml.WriteString("</testcase>")
+	}
+	xml.WriteString("</testsuite>")
+	exit := 0
+	if failing {
+		exit = 1
+	}
+	return map[string][]byte{
+		"exit":                 []byte(fmt.Sprintf("%d\n", exit)),
+		"source-identity":      []byte(commit + "\ntree\n"),
+		"source.tar.gz":        []byte("source snapshot"),
+		"toolchain":            []byte("java17 maven"),
+		"command.log":          []byte("maven run"),
+		"reports/TEST-all.xml": []byte(xml.String()),
+	}
+}
+
+func TestPairProfileSourceSealsAsBaseSubject(t *testing.T) {
+	w, r, _ := pairFixture(t)
+	f := &pairEngine{
+		t: t, jobs: map[string]*pairJob{},
+		filesBySubject: map[string]map[string][]byte{
+			"base": {"exit": []byte("0\n"), "source-identity": []byte(SourceCommit + "\ntree\n"), "source.tar.gz": []byte("source snapshot"), "toolchain": []byte("java17 maven"), "command.log": []byte("source checkout")},
+		},
+	}
+	w.exec = f.run
+	commit, err := w.ResolveSource(context.Background(), r)
+	if err != nil || commit != SourceCommit {
+		t.Fatalf("pair-profile source resolution: %q %v", commit, err)
+	}
+	for _, call := range f.calls {
+		if call[0] == "create" && call[len(call)-1] != SourceCommit {
+			t.Fatalf("source container not pinned to the base commit: %v", call)
+		}
+	}
+	refs, err := w.RunEvidence(context.Background(), r.RunID)
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("source receipt under pair profile: %v %v", refs, err)
+	}
+}
+
+func TestPairFocusedExecutionRecordsBothSubjects(t *testing.T) {
+	w, r, store := pairFixture(t)
+	raw := []byte(unitTestArtifact)
+	ref, err := store.Put(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Request.InputArtifactDigest = ref.Digest
+	generated, err := w.PrepareTestArtifact(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.TestArtifactDigest = generated.TestArtifactDigest
+	r.PatchDigest = generated.PatchDigest
+	r.ChangedTestPaths = generated.ChangedTestPaths
+	a, err := DecodeTestArtifact(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &pairEngine{
+		t: t, jobs: map[string]*pairJob{},
+		filesBySubject: map[string]map[string][]byte{
+			"base":      pairSubjectFiles(SourceCommit, true, a.ExpectedTestIDs),
+			"candidate": pairSubjectFiles(pairCandidateCommit, false, a.ExpectedTestIDs),
+		},
+		statusBySubject: map[string]string{"base": "1\n"},
+	}
+	w.exec = f.run
+	result, err := w.RunMaven(context.Background(), testgenflow.MavenWorkRequest{WorkRequest: r, Phase: testgenflow.MavenPhaseFocusedTests})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded || result.EvidenceRef == "" {
+		t.Fatalf("candidate-passing pair must succeed: %+v", result)
+	}
+	if f.creates != 2 {
+		t.Fatalf("expected one container per subject, created %d", f.creates)
+	}
+	commits := map[string]bool{}
+	for _, call := range f.calls {
+		if call[0] == "create" {
+			commits[call[len(call)-1]] = true
+		}
+	}
+	if !commits[SourceCommit] || !commits[pairCandidateCommit] {
+		t.Fatalf("subject containers were not pinned to both pair commits: %v", commits)
+	}
+	document, err := w.get(context.Background(), result.EvidenceRef, MaxEvidenceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pair struct {
+		Phase    string `json:"phase"`
+		Subjects []struct {
+			Subject     string `json:"subject"`
+			Commit      string `json:"commit"`
+			Succeeded   bool   `json:"succeeded"`
+			EvidenceRef string `json:"evidence_ref"`
+		} `json:"subjects"`
+		Succeeded            bool `json:"succeeded"`
+		DifferentialObserved bool `json:"differential_observed"`
+	}
+	if err = json.Unmarshal(document, &pair); err != nil || pair.Phase != "focused_tests" || len(pair.Subjects) != 2 {
+		t.Fatalf("pair document: %s %v", document, err)
+	}
+	base, candidate := pair.Subjects[0], pair.Subjects[1]
+	if base.Subject != "base" || base.Commit != SourceCommit || base.Succeeded {
+		t.Fatalf("base subject outcome not recorded: %+v", base)
+	}
+	if candidate.Subject != "candidate" || candidate.Commit != pairCandidateCommit || !candidate.Succeeded {
+		t.Fatalf("candidate subject outcome not recorded: %+v", candidate)
+	}
+	if !pair.Succeeded || !pair.DifferentialObserved {
+		t.Fatalf("differential observation not derived: %+v", pair)
+	}
+	for _, subject := range pair.Subjects {
+		subjectEvidence, err := w.get(context.Background(), subject.EvidenceRef, MaxEvidenceBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var evidence Evidence
+		if err = strictJSON(subjectEvidence, &evidence); err != nil || evidence.Subject != subject.Subject || evidence.SourceCommit != subject.Commit || evidence.Phase != "focused_tests" {
+			t.Fatalf("subject evidence not bound to its immutable revision: %s", subjectEvidence)
+		}
+	}
+	refs, err := w.RunEvidence(context.Background(), r.RunID)
+	if err != nil || len(refs) != 2 {
+		t.Fatalf("retained per-subject receipts %v %v", refs, err)
+	}
+	if err = w.CleanupRun(context.Background(), r.RunID); err != nil || len(f.jobs) != 0 {
+		t.Fatalf("cleanup failed: %v jobs=%d", err, len(f.jobs))
+	}
+}
+
+func TestPairCandidateFailureFailsThePhase(t *testing.T) {
+	w, r, store := pairFixture(t)
+	raw := []byte(unitTestArtifact)
+	ref, err := store.Put(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Request.InputArtifactDigest = ref.Digest
+	generated, err := w.PrepareTestArtifact(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.TestArtifactDigest = generated.TestArtifactDigest
+	r.PatchDigest = generated.PatchDigest
+	r.ChangedTestPaths = generated.ChangedTestPaths
+	a, err := DecodeTestArtifact(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &pairEngine{
+		t: t, jobs: map[string]*pairJob{},
+		filesBySubject: map[string]map[string][]byte{
+			"base":      pairSubjectFiles(SourceCommit, false, a.ExpectedTestIDs),
+			"candidate": pairSubjectFiles(pairCandidateCommit, true, a.ExpectedTestIDs),
+		},
+		statusBySubject: map[string]string{"candidate": "1\n"},
+	}
+	w.exec = f.run
+	result, err := w.RunMaven(context.Background(), testgenflow.MavenWorkRequest{WorkRequest: r, Phase: testgenflow.MavenPhaseFocusedTests})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Succeeded || result.Diagnostic == "" {
+		t.Fatalf("candidate failure must fail the phase: %+v", result)
+	}
+	document, err := w.get(context.Background(), result.EvidenceRef, MaxEvidenceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pair struct {
+		Subjects []struct {
+			Subject   string `json:"subject"`
+			Succeeded bool   `json:"succeeded"`
+		} `json:"subjects"`
+		DifferentialObserved bool `json:"differential_observed"`
+	}
+	if err = json.Unmarshal(document, &pair); err != nil || len(pair.Subjects) != 2 || !pair.Subjects[0].Succeeded || pair.Subjects[1].Succeeded || pair.DifferentialObserved {
+		t.Fatalf("candidate-failure pair document: %s %v", document, err)
+	}
+}
+
+func TestContextDiscoveryRulesRejectUnsafeOrUnboundedSelections(t *testing.T) {
+	base := ContextDiscovery{SourceRoots: []string{"src/main/java"}, UnitTestRoots: []string{"src/test/java"}, SourceExtensions: []string{".java"}, UnitTestSuffix: "Test.java", BuildFiles: []string{"pom.xml"}, MaxFiles: 128}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid conventional source discovery rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*ContextDiscovery){
+		"source traversal":   func(d *ContextDiscovery) { d.SourceRoots[0] = "../src/main/java" },
+		"overlapping roots":  func(d *ContextDiscovery) { d.UnitTestRoots[0] = "src/main/java/test" },
+		"wildcard extension": func(d *ContextDiscovery) { d.SourceExtensions[0] = ".*" },
+		"suffix path":        func(d *ContextDiscovery) { d.UnitTestSuffix = "nested/Test.java" },
+		"build traversal":    func(d *ContextDiscovery) { d.BuildFiles[0] = "../pom.xml" },
+		"too many files":     func(d *ContextDiscovery) { d.MaxFiles = 129 },
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := base
+			d.SourceRoots = slices.Clone(base.SourceRoots)
+			d.UnitTestRoots = slices.Clone(base.UnitTestRoots)
+			d.SourceExtensions = slices.Clone(base.SourceExtensions)
+			d.BuildFiles = slices.Clone(base.BuildFiles)
+			mutate(&d)
+			if err := d.Validate(); err == nil {
+				t.Fatal("unsafe discovery rules accepted")
+			}
+		})
+	}
+}
+
+func TestOCIOfflineReadinessProbe(t *testing.T) {
+	if os.Getenv("ATG_TEST_LOCALWORKER_OCI") != "1" {
+		t.Skip("set ATG_TEST_LOCALWORKER_OCI=1 for rootless OCI network-namespace probe")
+	}
+	p, err := LoadProfile(unitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.NewFileStore(t.TempDir(), MaxEvidenceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w, err := New(Config{Profile: p, Artifacts: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err = w.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOCIUnitProfileRunsExactBaseline(t *testing.T) {
+	if os.Getenv("ATG_TEST_LOCALWORKER_OCI") != "1" {
+		t.Skip("set ATG_TEST_LOCALWORKER_OCI=1 for rootless OCI Maven check")
+	}
+	profilePath := unitProfilePath
+	if os.Getenv("ATG_TEST_LOCALWORKER_MODE") == "online" {
+		profilePath = onlineUnitProfilePath
+	}
+	p, err := LoadProfile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := artifact.NewFileStore(t.TempDir(), MaxEvidenceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	w, err := New(Config{Profile: p, Artifacts: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
+	defer cancel()
+	if err = w.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_, r, _ := fixture(t)
+	r.Request.ProfileVersion = p.Version
+	r.Request.ProfileDigest = w.ProfileDigest()
+	r.RunID = fmt.Sprintf("oci-unit-baseline-%d", time.Now().UnixNano())
+	r.IdempotencyKey = r.RunID + ":baseline"
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, _ = w.CancelRun(cleanupCtx, r.RunID)
+		if err := w.CleanupRun(cleanupCtx, r.RunID); err != nil {
+			t.Logf("cleanup: %v", err)
+		}
+	}()
+	result, err := w.RunMaven(ctx, testgenflow.MavenWorkRequest{WorkRequest: r, Phase: testgenflow.MavenPhasePackage})
+	if err != nil {
+		t.Fatalf("baseline operation: %v", err)
+	}
+	raw, err := w.get(ctx, result.EvidenceRef, MaxEvidenceBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence Evidence
+	if err = strictJSON(raw, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if !result.Succeeded {
+		log := []byte("command log unavailable")
+		if ref := evidence.Artifacts["command.log"]; ref != "" {
+			log, _ = w.get(ctx, ref, MaxEvidenceBytes)
+		}
+		if len(log) > 32*1024 {
+			log = log[len(log)-32*1024:]
+		}
+		t.Fatalf("baseline failed: diagnostic=%q summary=%#v log=%s", evidence.Diagnostic, evidence.Summary, log)
+	}
+	want := p.ExpectedTestIDs()
+	if evidence.ProfileDigest != w.ProfileDigest() || !slices.Equal(evidence.ExpectedTestIDs, want) || !slices.Equal(evidence.Summary.ExecutedTestIDs, want) || len(evidence.Summary.SkippedTestIDs) != 0 || len(evidence.Summary.FailedTestIDs) != 0 || len(evidence.Summary.UnexpectedTestIDs) != 0 {
+		t.Fatalf("baseline evidence differs from explicit inventory: %#v", evidence.Summary)
 	}
 }
 
@@ -408,11 +1067,18 @@ func TestSandboxArgumentsContainBoundsAndNoMountsOrInheritedEnvironment(t *testi
 			t.Fatalf("unsafe sandbox argument %s", arg)
 		}
 	}
+	unit, err := LoadProfile(unitProfilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args := (&Worker{profile: unit}).sandboxArgs("name", "run", "digest", "bridge", 1800); !slices.Contains(args, "--env=ATG_TEST_NETWORK_MODE=offline") || !slices.Contains(args, "--env=ATG_SUREFIRE_PROVIDER="+unit.SurefireProvider) {
+		t.Fatalf("offline mode or test provider was not bound into the worker environment: %v", args)
+	}
 }
 
 func TestProfileAndArtifactValidation(t *testing.T) {
 	w, r, s := fixture(t)
-	if len(w.profile.ExpectedTestIDs()) != 121 {
+	if len(w.profile.ExpectedTestIDs()) != 125 {
 		t.Fatal("baseline inventory changed")
 	}
 	raw := []byte(unitTestArtifact)
@@ -468,7 +1134,7 @@ func TestReadyBindsAndFreezesImageInRetainedProfile(t *testing.T) {
 			if args[2] != DefaultImage {
 				id = strings.TrimPrefix(args[2], "sha256:")
 			}
-			return json.Marshal([]any{map[string]any{"Id": id, "Config": map[string]any{"Labels": map[string]string{"io.lightpath.atg.worker": workerLabel}}}})
+			return json.Marshal([]any{map[string]any{"Id": id, "Config": map[string]any{"Labels": map[string]string{"io.lightpath.atg.worker": p.WorkerRecipe}}}})
 		case "run":
 			return []byte("java17"), nil
 		}
@@ -527,7 +1193,7 @@ func TestReadyDoesNotWaitForActiveOperation(t *testing.T) {
 		case "info":
 			return []byte(`{"host":{"os":"linux","security":{"rootless":true}}}`), nil
 		case "image":
-			return json.Marshal([]any{map[string]any{"Id": strings.Repeat("a", 64), "Config": map[string]any{"Labels": map[string]string{"io.lightpath.atg.worker": workerLabel}}}})
+			return json.Marshal([]any{map[string]any{"Id": strings.Repeat("a", 64), "Config": map[string]any{"Labels": map[string]string{"io.lightpath.atg.worker": w.profile.WorkerRecipe}}}})
 		case "run":
 			return nil, nil
 		case "exec":
@@ -584,14 +1250,14 @@ func TestMavenPhasesRequireExactIndependentInventory(t *testing.T) {
 		exit                                 int
 		want                                 bool
 	}{
-		{name: "baseline121", phase: testgenflow.MavenPhasePackage, want: true},
+		{name: "baseline125", phase: testgenflow.MavenPhasePackage, want: true},
 		{name: "baselineMissing", phase: testgenflow.MavenPhasePackage, missing: true},
 		{name: "baselineSkipped", phase: testgenflow.MavenPhasePackage, skipped: true},
 		{name: "baselineFailed", phase: testgenflow.MavenPhasePackage, failed: true},
 		{name: "baselineExit", phase: testgenflow.MavenPhasePackage, exit: 1},
 		{name: "focusedArtifact", phase: testgenflow.MavenPhaseFocusedTests, want: true},
 		{name: "focusedStale", phase: testgenflow.MavenPhaseFocusedTests, unexpected: true},
-		{name: "verify122", phase: testgenflow.MavenPhaseFinalVerify, want: true},
+		{name: "verify126", phase: testgenflow.MavenPhaseFinalVerify, want: true},
 		{name: "verifyMissingArtifact", phase: testgenflow.MavenPhaseFinalVerify, missing: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -719,7 +1385,7 @@ func TestOCIReadinessSourceRecoveryAndCleanup(t *testing.T) {
 	if os.Getenv("ATG_TEST_LOCALWORKER_OCI") != "1" {
 		t.Skip("set ATG_TEST_LOCALWORKER_OCI=1 for rootless Podman protocol check")
 	}
-	p, err := LoadProfile(profilePath)
+	p, err := LoadProfile(unitProfilePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -738,6 +1404,7 @@ func TestOCIReadinessSourceRecoveryAndCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, r, _ := fixture(t)
+	r.Request.ProfileVersion = p.Version
 	r.Request.ProfileDigest = w.ProfileDigest()
 	r.RunID = fmt.Sprintf("oci-source-%d", time.Now().UnixNano())
 	r.IdempotencyKey = r.RunID + ":source"
@@ -777,7 +1444,7 @@ func TestOCIAdmissionRejectsOverwriteAndCancellationRetainsEvidence(t *testing.T
 	if os.Getenv("ATG_TEST_LOCALWORKER_OCI") != "1" {
 		t.Skip("set ATG_TEST_LOCALWORKER_OCI=1 for rootless Podman admission/cancel check")
 	}
-	p, err := LoadProfile(profilePath)
+	p, err := LoadProfile(unitProfilePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -799,7 +1466,7 @@ func TestOCIAdmissionRejectsOverwriteAndCancellationRetainsEvidence(t *testing.T
 	input := artifact.Digest([]byte(runID))
 	name := containerName(runID + ":focused")
 	args := append([]string{"create"}, w.sandboxArgs(name, runLabel(runID), input, "bridge", 120)...)
-	args = append(args, w.imageID, "run", "focused_tests", "com.redhat.lightwell.ApplicationTest", p.RepositoryURL, p.Commit)
+	args = append(args, w.imageID, "run", "focused_tests", p.testSelector("package", TestArtifact{}), p.RepositoryURL, p.Commit)
 	if _, err = w.exec(ctx, nil, 4096, args...); err != nil {
 		t.Fatal(err)
 	}
@@ -834,15 +1501,15 @@ func TestOCIAdmissionRejectsOverwriteAndCancellationRetainsEvidence(t *testing.T
 		case <-tick.C:
 		}
 	}
-	original, err := w.exec(ctx, nil, 4096, "exec", state.ID, "cat", "/work/repo/src/test/java/com/redhat/lightwell/ApplicationTest.java")
+	original, err := w.exec(ctx, nil, 4096, "exec", state.ID, "cat", "/work/repo/src/test/java/com/redhat/lightwell/service/StatementImportServiceTest.java")
 	if err != nil {
 		t.Fatal(err)
 	}
-	bad := TestArtifact{Files: []TestFile{{Path: "src/test/java/com/redhat/lightwell/ApplicationTest.java", Content: "overwrite\n"}}}
+	bad := TestArtifact{Files: []TestFile{{Path: "src/test/java/com/redhat/lightwell/service/StatementImportServiceTest.java", Content: "overwrite\n"}}}
 	if _, err = w.exec(ctx, bad.archive(), 4096, "exec", "-i", state.ID, "/bin/bash", "/opt/atg/worker.sh", "admit", artifact.Digest([]byte("bad"))); err == nil {
 		t.Fatal("worker allowed original test overwrite")
 	}
-	after, err := w.exec(ctx, nil, 4096, "exec", state.ID, "cat", "/work/repo/src/test/java/com/redhat/lightwell/ApplicationTest.java")
+	after, err := w.exec(ctx, nil, 4096, "exec", state.ID, "cat", "/work/repo/src/test/java/com/redhat/lightwell/service/StatementImportServiceTest.java")
 	if err != nil || !bytes.Equal(original, after) {
 		t.Fatalf("original source changed: %v", err)
 	}
