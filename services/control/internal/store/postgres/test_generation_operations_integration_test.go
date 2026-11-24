@@ -299,6 +299,59 @@ func TestPostgresTestGenerationConcurrentOperationIntentsAreCreatedOnce(t *testi
 	}
 }
 
+func TestPostgresClaimsUnknownModelRunOnlyForRevisionCheckedRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := integrationStore(t)
+	profile := testGenerationStateDigest([]byte(testID(t, "recovery-profile")))
+	policy := testGenerationStateDigest([]byte(testID(t, "recovery-policy")))
+	request := testgenflow.Request{
+		RepositoryURL: "https://git.example/group/spring-demo.git", Revision: strings.Repeat("a", 40),
+		BaseBranch: "main", Subdirectory: ".", ProfileID: "spring-java17-maven", ProfileVersion: "1.0.0", ProfileDigest: profile,
+		InputMode: testgenflow.InputModeModelGeneration, CompletionMode: testgenflow.CompletionModePatchOnly,
+		Generation: &testgenflow.GenerationRequest{Objective: "Review a retained Plan", ContextPaths: []string{"pom.xml"}, PolicyDigest: policy},
+	}
+	run := createTestGenerationRun(t, store, request, time.Now().Add(-time.Second))
+	for _, eventType := range []testgenflow.EventType{testgenflow.EventSourceResolved, testgenflow.EventBaselineCompleted, testgenflow.EventGenerationStarted} {
+		event := testgenflow.Event{ID: testID(t, "recovery-stage"), ExpectedRevision: run.Revision, Type: eventType, OccurredAt: run.UpdatedAt.Add(time.Millisecond)}
+		if eventType == testgenflow.EventSourceResolved {
+			event.ResolvedCommit = request.Revision
+		}
+		if eventType == testgenflow.EventBaselineCompleted {
+			event.Succeeded = true
+		}
+		var err error
+		run, err = store.ApplyEvent(ctx, run.RunID, event)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	unknownEvent := testgenflow.Event{ID: testID(t, "recovery-unknown"), ExpectedRevision: run.Revision, Type: testgenflow.EventOutcomeUnknown, OccurredAt: run.UpdatedAt.Add(time.Millisecond), Diagnostic: "generation evidence retained but completion acknowledgement unknown"}
+	run, err := store.ApplyEvent(ctx, run.RunID, unknownEvent)
+	if err != nil || run.Status != testgenflow.StatusOutcomeUnknown {
+		t.Fatalf("seed unknown model run = %#v, %v", run, err)
+	}
+	if claim, err := store.ClaimNextModelGenerationRun(ctx, "normal-driver", profile, policy, time.Minute); err != nil || claim != nil {
+		t.Fatalf("ordinary driver claimed terminal unknown run: %#v %v", claim, err)
+	}
+	if claim, err := store.ClaimUnknownModelGenerationRun(ctx, run.RunID, "stale", profile, policy, run.Revision-1, time.Minute); err != nil || claim != nil {
+		t.Fatalf("stale recovery claim = %#v %v", claim, err)
+	}
+	claim, err := store.ClaimUnknownModelGenerationRun(ctx, run.RunID, "recovery-holder", profile, policy, run.Revision, time.Minute)
+	if err != nil || claim == nil || claim.RunID != run.RunID || claim.Fence != 1 {
+		t.Fatalf("valid recovery claim = %#v %v", claim, err)
+	}
+	if second, err := store.ClaimUnknownModelGenerationRun(ctx, run.RunID, "other-recovery", profile, policy, run.Revision, time.Minute); err != nil || second != nil {
+		t.Fatalf("concurrent recovery claim = %#v %v", second, err)
+	}
+	checkpoint := testgenflow.GenerationCheckpoint{ID: testgenflow.GenerationCheckpointID(run.RunID, run.RequestDigest, 1, "plan", testGenerationStateDigest([]byte("retained Plan"))), Stage: "plan", ArtifactRef: testGenerationStateDigest([]byte("retained Plan")), Attempt: 1, ExpiresAt: run.UpdatedAt.Add(time.Hour)}
+	recovery := testgenflow.GenerationRecovery{OperationKey: testgenflow.WorkKey(run.RunID, "generate", 1) + ":plan", InputDigest: testGenerationStateDigest([]byte("Plan input"))}
+	event := testgenflow.Event{ID: testID(t, "generation-recovered"), ExpectedRevision: run.Revision, Type: testgenflow.EventGenerationRecovered, OccurredAt: run.UpdatedAt.Add(2 * time.Millisecond), Checkpoint: &checkpoint, Recovery: &recovery}
+	recovered, err := store.ApplyClaimedTestGenerationEvent(ctx, *claim, event)
+	if err != nil || recovered.Status != testgenflow.StatusWaitingReview || recovered.Checkpoint == nil || recovered.Checkpoint.ArtifactRef != checkpoint.ArtifactRef {
+		t.Fatalf("persist recovery checkpoint = %#v %v", recovered, err)
+	}
+}
+
 func TestPostgresTestGenerationOperationBindingsAndImmutableOutcomes(t *testing.T) {
 	ctx := context.Background()
 	store := integrationStore(t)

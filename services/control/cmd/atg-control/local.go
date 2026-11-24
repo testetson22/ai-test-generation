@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/agentworker"
@@ -44,10 +45,20 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 		return nil, fmt.Errorf("load local development profile: %w", err)
 	}
 	var generationPolicy agentworker.Policy
+	var generationContextMode string
+	var generationContextPaths []string
 	if settings.enabled {
 		generationPolicy, err = agentworker.LoadPolicy(settings.policyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load generation policy: %w", err)
+		}
+		switch {
+		case profile.ContextDiscovery != nil && generationPolicy.SchemaVersion == "2" && len(generationPolicy.ContextPaths) == 0:
+			generationContextMode = testgenflow.ContextModeProfileDiscovery
+		case profile.ContextDiscovery == nil && generationPolicy.SchemaVersion == "1":
+			generationContextPaths = slices.Clone(generationPolicy.ContextPaths)
+		default:
+			return nil, errors.New("generation policy context mode does not match the selected execution profile")
 		}
 		if strings.Contains(generationPolicy.Model.Endpoint, ".invalid") {
 			return nil, errors.New("replace the example model endpoint before enabling external operations")
@@ -83,7 +94,8 @@ func newLocalRuntime(ctx context.Context, getenv func(string) string, logger *sl
 		}
 		generation = generator
 		apiConfig.GenerationPolicyDigest = generator.PolicyDigest()
-		apiConfig.GenerationContextPaths = append([]string(nil), generationPolicy.ContextPaths...)
+		apiConfig.GenerationContextMode = generationContextMode
+		apiConfig.GenerationContextPaths = generationContextPaths
 		apiConfig.ReviewerID = settings.reviewer.ReviewerID
 		apiConfig.ReviewerRole = settings.reviewer.ReviewerRole
 		apiConfig.ReviewAuthorizationRef = settings.reviewer.ReviewAuthorizationRef

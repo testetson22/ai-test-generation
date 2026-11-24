@@ -141,3 +141,54 @@ func (a *TestGenerationDevelopmentAPI) reviewGeneration(w http.ResponseWriter, r
 	}
 	writeTestGenerationDevelopmentResponse(w, http.StatusAccepted, updated)
 }
+
+func (a *TestGenerationDevelopmentAPI) reconcileGeneration(w http.ResponseWriter, r *http.Request) {
+	if !a.Ready() {
+		unavailableTestGenerationDevelopment(w, r)
+		return
+	}
+	if !a.authenticate(w, r) {
+		return
+	}
+	body, err := decodeJSONBody(w, r, 1024)
+	if err != nil {
+		writeBodyError(w, err)
+		return
+	}
+	var input struct {
+		ExpectedRevision *int64 `json:"expected_revision"`
+	}
+	if decodeOneJSON(body, &input) != nil || input.ExpectedRevision == nil || *input.ExpectedRevision < 1 {
+		writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "invalid_generation_reconciliation")
+		return
+	}
+	updated, err := a.ReconcileGeneration(r.Context(), r.PathValue("runID"), *input.ExpectedRevision)
+	if err != nil {
+		var failure *testgenflow.WorkerFailure
+		switch {
+		case errors.Is(err, testgenflow.ErrRevisionConflict), errors.Is(err, testgenflow.ErrFlowClaimLost):
+			writeTestGenerationDevelopmentError(w, http.StatusConflict, "generation_reconciliation_conflict")
+		case errors.Is(err, testgenflow.ErrInvalidTransition):
+			writeTestGenerationDevelopmentError(w, http.StatusConflict, "generation_reconciliation_not_applicable")
+		case errors.Is(err, testgenflow.ErrOperationConflict):
+			writeTestGenerationDevelopmentError(w, http.StatusConflict, "generation_reconciliation_operation_conflict")
+		case errors.As(err, &failure) && failure.OutcomeUnknown:
+			code := "generation_reconciliation_worker_unconfirmed"
+			switch failure.Diagnostic {
+			case "completed generation worker is not available for recovery":
+				code = "generation_reconciliation_worker_not_stopped"
+			case "named generation worker identity conflict":
+				code = "generation_reconciliation_worker_identity_mismatch"
+			case "generation worker inspection failed":
+				code = "generation_reconciliation_worker_inspection_failed"
+			case "completed generation receipt cannot be reconciled":
+				code = "generation_reconciliation_receipt_invalid"
+			}
+			writeTestGenerationDevelopmentError(w, http.StatusConflict, code)
+		default:
+			writeTestGenerationDevelopmentError(w, http.StatusServiceUnavailable, "generation_reconciliation_unavailable")
+		}
+		return
+	}
+	writeTestGenerationDevelopmentResponse(w, http.StatusAccepted, updated)
+}

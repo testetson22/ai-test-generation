@@ -33,6 +33,47 @@ func (s *Store) ClaimNextModelGenerationRun(ctx context.Context, holder, profile
 	return s.claimNextGenerationRun(ctx, holder, profileDigest, policyDigest, testgenflow.InputModeModelGeneration, lease)
 }
 
+func (s *Store) ClaimUnknownModelGenerationRun(ctx context.Context, runID, holder, profileDigest, policyDigest string, expectedRevision int64, lease time.Duration) (*testgenflow.FlowClaim, error) {
+	if !flowOperationIDPattern.MatchString(runID) || !flowOperationIDPattern.MatchString(holder) || !flowOperationDigestPattern.MatchString(profileDigest) || !flowOperationDigestPattern.MatchString(policyDigest) || expectedRevision < 1 || lease < time.Microsecond {
+		return nil, fmt.Errorf("invalid model-generation recovery claim")
+	}
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("test-generation run store is unavailable")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin model-generation recovery claim: %w", err)
+	}
+	defer tx.Rollback()
+	var found string
+	err = tx.QueryRowContext(ctx, `
+		SELECT run_id FROM development_test_generation_runs
+		WHERE run_id = $1 AND status = 'outcome_unknown' AND revision = $2
+		  AND (claim_lease_until IS NULL OR claim_lease_until <= clock_timestamp())
+		  AND convert_from(state_bytes, 'UTF8')::jsonb -> 'request' ->> 'input_mode' = $3
+		  AND convert_from(state_bytes, 'UTF8')::jsonb -> 'request' ->> 'profile_digest' = $4
+		  AND convert_from(state_bytes, 'UTF8')::jsonb -> 'request' -> 'generation' ->> 'policy_digest' = $5
+		FOR UPDATE`, runID, expectedRevision, testgenflow.InputModeModelGeneration, profileDigest, policyDigest).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("select model-generation run for recovery: %w", err)
+	}
+	claim := &testgenflow.FlowClaim{RunID: found, Holder: holder}
+	if err := tx.QueryRowContext(ctx, `
+		UPDATE development_test_generation_runs
+		SET claim_holder = $2, claim_fence = claim_fence + 1,
+		    claim_lease_until = clock_timestamp() + $3 * interval '1 microsecond'
+		WHERE run_id = $1 RETURNING claim_fence, claim_lease_until`, found, holder, lease.Microseconds()).Scan(&claim.Fence, &claim.LeaseUntil); err != nil {
+		return nil, fmt.Errorf("claim model-generation run for recovery: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit model-generation recovery claim: %w", err)
+	}
+	return claim, nil
+}
+
 func (s *Store) claimNextGenerationRun(ctx context.Context, holder, profileDigest, policyDigest, inputMode string, lease time.Duration) (*testgenflow.FlowClaim, error) {
 	if !flowOperationIDPattern.MatchString(holder) || lease < time.Microsecond || profileDigest != "" && !flowOperationDigestPattern.MatchString(profileDigest) {
 		return nil, fmt.Errorf("invalid test-generation claim holder, profile digest, or lease")

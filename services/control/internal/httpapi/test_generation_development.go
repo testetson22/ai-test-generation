@@ -1,8 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -13,7 +15,7 @@ import (
 	"github.com/project-lightpath/ai-test-generation/services/control/internal/testgensim"
 )
 
-const maxTestGenerationDevelopmentRequestBytes = 16 * 1024
+const maxTestGenerationDevelopmentRequestBytes = 80 * 1024
 
 type TestGenerationDevelopmentConfig struct {
 	BearerToken            string
@@ -28,6 +30,7 @@ type TestGenerationDevelopmentConfig struct {
 	InputMode              string
 	CompletionMode         string
 	GenerationPolicyDigest string
+	GenerationContextMode  string
 	GenerationContextPaths []string
 	ReviewerID             string
 	ReviewerRole           string
@@ -43,15 +46,17 @@ type TestGenerationDevelopmentAPI struct {
 	MaxTestArtifactBytes int64
 	Operations           func(context.Context, string) ([]testgenflow.Operation, error)
 	ApproveGeneratedCode func(context.Context, string, []string) (string, error)
+	ReconcileGeneration  func(context.Context, string, int64) (testgenflow.Run, error)
 }
 
 type StartTestGenerationDevelopmentRequest struct {
-	BaseBranch          string `json:"base_branch,omitempty"`
-	IssueIID            string `json:"issue_iid,omitempty"`
-	Subdirectory        string `json:"subdirectory,omitempty"`
-	VerifyCommit        bool   `json:"verify_commit,omitempty"`
-	InputArtifactDigest string `json:"input_artifact_digest,omitempty"`
-	Objective           string `json:"objective,omitempty"`
+	BaseBranch          string          `json:"base_branch,omitempty"`
+	IssueIID            string          `json:"issue_iid,omitempty"`
+	Subdirectory        string          `json:"subdirectory,omitempty"`
+	VerifyCommit        bool            `json:"verify_commit,omitempty"`
+	InputArtifactDigest string          `json:"input_artifact_digest,omitempty"`
+	Objective           string          `json:"objective,omitempty"`
+	ContextInput        json.RawMessage `json:"context_input,omitempty"`
 }
 
 type TestGenerationDevelopmentResponse struct {
@@ -120,6 +125,9 @@ func (a *TestGenerationDevelopmentAPI) Register(mux *http.ServeMux) {
 		if a.Config.InputMode == testgenflow.InputModeModelGeneration && a.ApproveGeneratedCode != nil {
 			mux.HandleFunc("POST /development/test-generation-runs/{runID}/reviews", a.reviewGeneration)
 		}
+		if a.Config.InputMode == testgenflow.InputModeModelGeneration && a.ReconcileGeneration != nil {
+			mux.HandleFunc("POST /development/test-generation-runs/{runID}/reconcile", a.reconcileGeneration)
+		}
 	}
 }
 
@@ -148,7 +156,7 @@ func (a *TestGenerationDevelopmentAPI) Ready() bool {
 		if a.Artifacts == nil || a.ValidateTestArtifact == nil || a.ApproveGeneratedCode == nil || !ValidDevelopmentReviewer(a.Config) {
 			return false
 		}
-		request.Generation = &testgenflow.GenerationRequest{Objective: "configuration probe", ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), PolicyDigest: a.Config.GenerationPolicyDigest}
+		request.Generation = &testgenflow.GenerationRequest{Objective: "configuration probe", ContextMode: a.Config.GenerationContextMode, ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), PolicyDigest: a.Config.GenerationPolicyDigest}
 	}
 	return request.Validate() == nil
 }
@@ -203,8 +211,8 @@ func (a *TestGenerationDevelopmentAPI) createRun(w http.ResponseWriter, r *http.
 			writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "unsupported_model_generation_options")
 			return
 		}
-		request.Generation = &testgenflow.GenerationRequest{Objective: input.Objective, ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), PolicyDigest: a.Config.GenerationPolicyDigest}
-	} else if input.Objective != "" {
+		request.Generation = &testgenflow.GenerationRequest{Objective: input.Objective, ContextMode: a.Config.GenerationContextMode, ContextPaths: append([]string(nil), a.Config.GenerationContextPaths...), ContextInput: bytes.Clone(input.ContextInput), PolicyDigest: a.Config.GenerationPolicyDigest}
+	} else if input.Objective != "" || len(input.ContextInput) != 0 {
 		writeTestGenerationDevelopmentError(w, http.StatusBadRequest, "objective_requires_model_generation_mode")
 		return
 	}

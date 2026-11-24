@@ -32,6 +32,7 @@ func TestGenerationReviewCreateUsesServerPolicyAndRequiresAuthentication(t *test
 		`{"objective":"Verify behavior","harness":"caller-harness"}`,
 		`{"objective":"Verify behavior","policy_digest":"caller-policy"}`,
 		`{"objective":"Verify behavior","context_paths":["unapproved/source"]}`,
+		`{"context_input":{"references":["user/path"]}}`,
 		`{"objective":"Verify behavior","input_artifact_digest":"sha256:` + strings.Repeat("a", 64) + `"}`,
 	} {
 		response := testGenerationRequest(f.handler, http.MethodPost, "/development/test-generation-runs", body, "invalid-model-create", f.api.Config.BearerToken)
@@ -42,6 +43,21 @@ func TestGenerationReviewCreateUsesServerPolicyAndRequiresAuthentication(t *test
 	run := f.createRun(t)
 	if run.Request.InputMode != testgenflow.InputModeModelGeneration || run.Request.CompletionMode != testgenflow.CompletionModePatchOnly || run.Request.InputArtifactDigest != "" || run.Request.Generation == nil || run.Request.Generation.Objective != "Verify the specified behavior" || run.Request.Generation.PolicyDigest != f.api.Config.GenerationPolicyDigest || !slices.Equal(run.Request.Generation.ContextPaths, []string{"pom.xml"}) || run.Status != testgenflow.StatusQueued || run.AttemptCount() != 0 || f.approvalCalls != 0 {
 		t.Fatalf("model creation lost server-selected policy or fabricated work: %#v", run)
+	}
+}
+
+func TestGenerationCreateUsesProfileDiscoveryWithoutClientSourcePaths(t *testing.T) {
+	f := newGenerationReviewTestAPI(t)
+	f.api.Config.GenerationContextMode = testgenflow.ContextModeProfileDiscovery
+	f.api.Config.GenerationContextPaths = nil
+	response := testGenerationRequest(f.handler, http.MethodPost, "/development/test-generation-runs", `{"objective":"Verify behavior","context_input":{"references":[{"path":"src/example/Service.java"}],"origin":"user"}}`, "context-discovery-objective", f.api.Config.BearerToken)
+	var body TestGenerationDevelopmentResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusCreated {
+		t.Fatalf("create discovered-context run: %d %s %v", response.Code, response.Body.String(), err)
+	}
+	generation := body.Run.Request.Generation
+	if generation == nil || generation.ContextMode != testgenflow.ContextModeProfileDiscovery || len(generation.ContextPaths) != 0 || string(generation.ContextInput) != `{"references":[{"path":"src/example/Service.java"}],"origin":"user"}` || generation.PolicyDigest != f.api.Config.GenerationPolicyDigest {
+		t.Fatalf("generation request did not preserve opaque context alongside discovery: %#v", generation)
 	}
 }
 
