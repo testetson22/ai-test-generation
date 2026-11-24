@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -280,10 +281,7 @@ func (w *Worker) validateTaskPriors(ctx context.Context, t Task, depth int) erro
 		if err != nil || e.Partial || r.Status != "completed" || p.Phase != prior.phase || p.RunID != t.RunID || p.Attempt != t.Attempt || p.ProfileDigest != t.ProfileDigest || p.Objective != t.Objective {
 			return fmt.Errorf("retained prior artifact binding mismatch")
 		}
-		want, _ := json.Marshal(p.Source)
-		got, _ := json.Marshal(t.Source)
-		var a, b bytes.Buffer
-		if !bytes.Equal(want, got) || json.Compact(&a, prior.output) != nil || json.Compact(&b, r.Output) != nil || !bytes.Equal(a.Bytes(), b.Bytes()) || (prior.phase == "plan" && p.Prior.AnalysisRef != t.Prior.AnalysisRef) {
+		if !reflect.DeepEqual(p.Source, t.Source) || !samePriorOutput(prior.phase, prior.output, r.Output) || (prior.phase == "plan" && p.Prior.AnalysisRef != t.Prior.AnalysisRef) {
 			return fmt.Errorf("retained prior content differs from referenced artifact")
 		}
 	}
@@ -310,8 +308,21 @@ func (w *Worker) validateTaskPriors(ctx context.Context, t Task, depth int) erro
 	return nil
 }
 
+func samePriorOutput(phase string, embedded, referenced []byte) bool {
+	switch phase {
+	case "analyze":
+		var embeddedOutput, referencedOutput Analysis
+		return strictJSON(embedded, &embeddedOutput) == nil && strictJSON(referenced, &referencedOutput) == nil && reflect.DeepEqual(embeddedOutput, referencedOutput)
+	case "plan":
+		var embeddedOutput, referencedOutput Plan
+		return strictJSON(embedded, &embeddedOutput) == nil && strictJSON(referenced, &referencedOutput) == nil && reflect.DeepEqual(embeddedOutput, referencedOutput)
+	default:
+		return false
+	}
+}
+
 func (w *Worker) validateTaskSource(ctx context.Context, t Task) error {
-	if t.SchemaVersion != "1" || (t.Phase != "analyze" && t.Phase != "plan" && t.Phase != "code") || t.Attempt < 1 || t.Attempt > 100 || !text(t.Objective) || !commitPattern.MatchString(t.Source.Commit) || !commitPattern.MatchString(t.Source.TreeID) || !digestPattern.MatchString(t.ProfileDigest) || len(t.Source.Files) != len(w.policy.ContextPaths) {
+	if t.SchemaVersion != "1" || (t.Phase != "analyze" && t.Phase != "plan" && t.Phase != "code") || t.Attempt < 1 || t.Attempt > 100 || !text(t.Objective) || !commitPattern.MatchString(t.Source.Commit) || !commitPattern.MatchString(t.Source.TreeID) || !digestPattern.MatchString(t.ProfileDigest) || len(t.Source.Files) < 1 || len(t.Source.Files) > 128 {
 		return fmt.Errorf("invalid retained generation task")
 	}
 	p, _, err := w.sourceProfile(ctx, t.ProfileDigest)
@@ -322,7 +333,14 @@ func (w *Worker) validateTaskSource(ctx context.Context, t Task) error {
 	if err != nil {
 		return err
 	}
-	files, err := contextFiles(archive, w.policy.ContextPaths, w.policy.Limits.MaxContextBytes)
+	var files []SourceFile
+	if p.ContextDiscovery != nil && w.policy.SchemaVersion == "2" && len(w.policy.ContextPaths) == 0 {
+		files, err = discoveredContextFiles(archive, p.ContextDiscovery, w.policy.Limits.MaxContextBytes)
+	} else if p.ContextDiscovery == nil && w.policy.SchemaVersion == "1" {
+		files, err = contextFiles(archive, w.policy.ContextPaths, w.policy.Limits.MaxContextBytes)
+	} else {
+		return fmt.Errorf("retained source context mode differs from active policy")
+	}
 	if err != nil {
 		return err
 	}

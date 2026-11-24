@@ -24,19 +24,20 @@ type Prior struct {
 }
 
 type Task struct {
-	SchemaVersion string `json:"schema_version"`
-	JobID         string `json:"job_id"`
-	RunID         string `json:"run_id"`
-	Attempt       int    `json:"attempt"`
-	Phase         string `json:"phase"`
-	Objective     string `json:"objective"`
-	ProfileDigest string `json:"profile_digest"`
-	PolicyDigest  string `json:"policy_digest"`
-	Harness       string `json:"harness"`
-	Model         Model  `json:"model"`
-	Source        Source `json:"source"`
-	Prior         Prior  `json:"prior"`
-	Limits        Limits `json:"limits"`
+	SchemaVersion string          `json:"schema_version"`
+	JobID         string          `json:"job_id"`
+	RunID         string          `json:"run_id"`
+	Attempt       int             `json:"attempt"`
+	Phase         string          `json:"phase"`
+	Objective     string          `json:"objective"`
+	ContextInput  json.RawMessage `json:"context_input,omitempty"`
+	ProfileDigest string          `json:"profile_digest"`
+	PolicyDigest  string          `json:"policy_digest"`
+	Harness       string          `json:"harness"`
+	Model         Model           `json:"model"`
+	Source        Source          `json:"source"`
+	Prior         Prior           `json:"prior"`
+	Limits        Limits          `json:"limits"`
 }
 
 type Usage struct {
@@ -80,22 +81,29 @@ type Analysis struct {
 	Limitations []string `json:"limitations"`
 }
 type Scenario struct {
-	Name        string   `json:"name"`
-	SourcePaths []string `json:"source_paths"`
-	TestPath    string   `json:"test_path"`
-	Behavior    string   `json:"behavior"`
-	Oracle      string   `json:"oracle"`
+	Name             string            `json:"name"`
+	SourcePaths      []string          `json:"source_paths"`
+	TestPath         string            `json:"test_path"`
+	Behavior         string            `json:"behavior"`
+	Oracle           string            `json:"oracle"`
+	TestLevel        string            `json:"test_level,omitempty"`
+	ExpectedOutcomes map[string]string `json:"expected_outcomes,omitempty"`
 }
 type Plan struct {
 	Summary     string     `json:"summary"`
 	Scenarios   []Scenario `json:"scenarios"`
 	Limitations []string   `json:"limitations"`
 }
+type UnimplementedScenario struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
 type Code struct {
-	Summary          string                 `json:"summary"`
-	Files            []localworker.TestFile `json:"files"`
-	SuggestedTestIDs []string               `json:"suggested_test_ids"`
-	Limitations      []string               `json:"limitations"`
+	Summary                string                  `json:"summary"`
+	Files                  []localworker.TestFile  `json:"files"`
+	SuggestedTestIDs       []string                `json:"suggested_test_ids"`
+	UnimplementedScenarios []UnimplementedScenario `json:"unimplemented_scenarios,omitempty"`
+	Limitations            []string                `json:"limitations"`
 }
 
 var testPathPattern = regexp.MustCompile(`^src/test/java/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*Test\.java$`)

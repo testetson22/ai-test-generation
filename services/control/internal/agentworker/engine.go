@@ -178,7 +178,7 @@ func (w *Worker) Ready(ctx context.Context) error {
 			Limitation      string  `json:"limitation,omitempty"`
 		} `json:"harnesses"`
 	}
-	if err := strictJSON(raw, &probe); err != nil || probe.SchemaVersion != "1" || probe.WorkerVersion != "0.1.0" || probe.PythonVersion == "" || probe.ModelCallsAllowed || probe.LiveIntegration != "not_verified" {
+	if err := strictJSON(raw, &probe); err != nil || probe.SchemaVersion != "1" || probe.WorkerVersion != workerVersion || probe.PythonVersion == "" || probe.ModelCallsAllowed || probe.LiveIntegration != "not_verified" {
 		return fmt.Errorf("generation worker protocol probe mismatch")
 	}
 	harness, ok := probe.Harnesses[w.policy.Harness]

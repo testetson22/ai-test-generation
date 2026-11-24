@@ -84,7 +84,21 @@ func (w *Worker) source(ctx context.Context, r testgenflow.WorkRequest) (Source,
 	if err != nil {
 		return Source{}, err
 	}
-	files, err := contextFiles(archive, w.policy.ContextPaths, w.policy.Limits.MaxContextBytes)
+	var files []SourceFile
+	switch r.Request.Generation.ContextMode {
+	case testgenflow.ContextModeProfileDiscovery:
+		if p.ContextDiscovery == nil || w.policy.SchemaVersion != "2" || len(w.policy.ContextPaths) != 0 {
+			return Source{}, fmt.Errorf("profile discovery is not enabled by the pinned source policy")
+		}
+		files, err = discoveredContextFiles(archive, p.ContextDiscovery, w.policy.Limits.MaxContextBytes)
+	case "":
+		if p.ContextDiscovery != nil || w.policy.SchemaVersion != "1" {
+			return Source{}, fmt.Errorf("explicit context is not enabled by the pinned source policy")
+		}
+		files, err = contextFiles(archive, w.policy.ContextPaths, w.policy.Limits.MaxContextBytes)
+	default:
+		return Source{}, fmt.Errorf("unsupported generation context mode")
+	}
 	if err != nil {
 		return Source{}, err
 	}
@@ -123,6 +137,46 @@ func contextFiles(raw []byte, paths []string, maxBytes int) ([]SourceFile, error
 	return inspectArchive(raw, paths, maxBytes, false)
 }
 
+func discoveredContextFiles(raw []byte, discovery *localworker.ContextDiscovery, maxBytes int) ([]SourceFile, error) {
+	if err := discovery.Validate(); err != nil {
+		return nil, err
+	}
+	required := make(map[string]bool, len(discovery.BuildFiles))
+	for _, name := range discovery.BuildFiles {
+		required[name] = true
+	}
+	files, err := inspectArchiveSelected(raw, func(name string) bool {
+		if required[name] {
+			return true
+		}
+		hasSourceExtension := false
+		for _, extension := range discovery.SourceExtensions {
+			if strings.HasSuffix(name, extension) {
+				hasSourceExtension = true
+				break
+			}
+		}
+		if !hasSourceExtension {
+			return false
+		}
+		for _, root := range discovery.SourceRoots {
+			if strings.HasPrefix(name, root+"/") {
+				return true
+			}
+		}
+		for _, root := range discovery.UnitTestRoots {
+			if strings.HasPrefix(name, root+"/") && strings.HasSuffix(name, discovery.UnitTestSuffix) {
+				return true
+			}
+		}
+		return false
+	}, required, discovery.MaxFiles, maxBytes, false)
+	if err == nil && len(files) <= len(required) {
+		return nil, fmt.Errorf("repository source discovery found build metadata but no source or unit tests")
+	}
+	return files, err
+}
+
 func (w *Worker) newTestFiles(ctx context.Context, t Task, files []localworker.TestFile) error {
 	raw, err := w.get(ctx, t.Source.ArtifactRef, maxArchiveBytes)
 	if err != nil {
@@ -137,7 +191,21 @@ func (w *Worker) newTestFiles(ctx context.Context, t Task, files []localworker.T
 }
 
 func inspectArchive(raw []byte, paths []string, maxBytes int, rejectExisting bool) ([]SourceFile, error) {
+	wanted := map[string]bool{}
+	for _, name := range paths {
+		if !safePath(name) || wanted[name] {
+			return nil, fmt.Errorf("invalid selected context path")
+		}
+		wanted[name] = true
+	}
+	return inspectArchiveSelected(raw, func(name string) bool { return wanted[name] }, wanted, len(wanted), maxBytes, rejectExisting)
+}
+
+func inspectArchiveSelected(raw []byte, include func(string) bool, required map[string]bool, maxFiles, maxBytes int, rejectExisting bool) ([]SourceFile, error) {
 	if len(raw) == 0 || len(raw) > maxArchiveBytes {
+		return nil, artifact.ErrTooLarge
+	}
+	if maxFiles < 1 || maxFiles > 128 {
 		return nil, artifact.ErrTooLarge
 	}
 	compressed := bytes.NewReader(raw)
@@ -149,13 +217,7 @@ func inspectArchive(raw []byte, paths []string, maxBytes int, rejectExisting boo
 	gz.Multistream(false)
 	bounded := &io.LimitedReader{R: gz, N: 64*1024*1024 + 1}
 	reader := tar.NewReader(bounded)
-	wanted, seen := map[string]bool{}, map[string]bool{}
-	for _, name := range paths {
-		if !safePath(name) || wanted[name] {
-			return nil, fmt.Errorf("invalid selected context path")
-		}
-		wanted[name] = true
-	}
+	seen := map[string]bool{}
 	var files []SourceFile
 	total, count := int64(0), 0
 	for {
@@ -179,7 +241,7 @@ func inspectArchive(raw []byte, paths []string, maxBytes int, rejectExisting boo
 			return nil, fmt.Errorf("unsafe, duplicate, linked or oversized source entry")
 		}
 		seen[name] = true
-		if !wanted[name] {
+		if !include(name) {
 			continue
 		}
 		if rejectExisting {
@@ -187,6 +249,9 @@ func inspectArchive(raw []byte, paths []string, maxBytes int, rejectExisting boo
 		}
 		if h.Typeflag != tar.TypeReg {
 			return nil, fmt.Errorf("selected context path is not a regular file")
+		}
+		if len(files) >= maxFiles {
+			return nil, artifact.ErrTooLarge
 		}
 		total += h.Size
 		if total > int64(maxBytes) {
@@ -221,8 +286,15 @@ func inspectArchive(raw []byte, paths []string, maxBytes int, rejectExisting boo
 	if compressed.Len() != 0 {
 		return nil, fmt.Errorf("concatenated source gzip")
 	}
-	if !rejectExisting && len(files) != len(wanted) {
-		return nil, fmt.Errorf("selected context files missing from source")
+	if !rejectExisting {
+		for name := range required {
+			if !seen[name] {
+				return nil, fmt.Errorf("required context file missing from source")
+			}
+		}
+		if len(files) == 0 {
+			return nil, fmt.Errorf("source context selection is empty")
+		}
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil

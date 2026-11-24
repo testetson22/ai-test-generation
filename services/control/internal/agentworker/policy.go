@@ -19,8 +19,9 @@ import (
 )
 
 const ProtocolVersion = "1"
-const PromptVersion = "generation-stage-v1"
-const workerLabel = "generation-v1"
+const PromptVersion = "generation-stage-v4"
+const workerVersion = "0.6.0"
+const workerLabel = "generation-v6"
 const maxTaskBytes = 2 * 1024 * 1024
 const maxArchiveBytes = 32 * 1024 * 1024
 
@@ -47,7 +48,7 @@ type Policy struct {
 	SchemaVersion string   `json:"schema_version"`
 	Harness       string   `json:"harness"`
 	Model         Model    `json:"model"`
-	ContextPaths  []string `json:"context_paths"`
+	ContextPaths  []string `json:"context_paths,omitempty"`
 	Limits        Limits   `json:"limits"`
 	NetworkPolicy string   `json:"network_policy"`
 	Digest        string   `json:"-"`
@@ -75,7 +76,7 @@ func DecodePolicy(raw []byte) (Policy, error) {
 	if err := strictJSON(raw, &p); err != nil {
 		return p, err
 	}
-	if p.SchemaVersion != "1" || (p.Harness != "pydantic_ai" && p.Harness != "aider") || p.NetworkPolicy != "public-egress-development" {
+	if (p.SchemaVersion != "1" && p.SchemaVersion != "2") || (p.Harness != "pydantic_ai" && p.Harness != "aider") || p.NetworkPolicy != "public-egress-development" {
 		return p, fmt.Errorf("unsupported generation policy version, harness, or network policy")
 	}
 	u, err := url.Parse(p.Model.Endpoint)
@@ -86,15 +87,19 @@ func DecodePolicy(raw []byte) (Policy, error) {
 	if l.TimeoutSeconds < 1 || l.TimeoutSeconds > 600 || l.MaxOutputBytes < 4096 || l.MaxOutputBytes > 1048576 || l.MaxContextBytes < 1 || l.MaxContextBytes > 1048576 || l.MaxRequests < 1 || l.MaxRequests > 8 || l.MaxOutputTokens < 1 || l.MaxOutputTokens > 32768 {
 		return p, fmt.Errorf("generation limits exceed supported bounds")
 	}
-	if len(p.ContextPaths) < 1 || len(p.ContextPaths) > 64 {
-		return p, fmt.Errorf("context requires 1..64 explicit files")
-	}
-	seen := map[string]bool{}
-	for _, name := range p.ContextPaths {
-		if !safePath(name) || seen[name] {
-			return p, fmt.Errorf("context paths must be unique repository-relative files")
+	if p.SchemaVersion == "1" {
+		if len(p.ContextPaths) < 1 || len(p.ContextPaths) > 64 {
+			return p, fmt.Errorf("legacy context requires 1..64 explicit files")
 		}
-		seen[name] = true
+		seen := map[string]bool{}
+		for _, name := range p.ContextPaths {
+			if !safePath(name) || seen[name] {
+				return p, fmt.Errorf("legacy context paths must be unique repository-relative files")
+			}
+			seen[name] = true
+		}
+	} else if len(p.ContextPaths) != 0 {
+		return p, fmt.Errorf("repository-discovery policy cannot contain explicit source files")
 	}
 	p.raw = bytes.Clone(raw)
 	p.Digest = artifact.Digest(raw)

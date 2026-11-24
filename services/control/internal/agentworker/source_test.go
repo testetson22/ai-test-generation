@@ -86,6 +86,45 @@ func TestSourceContextArchiveSafetyAndExactFileDigests(t *testing.T) {
 	}
 }
 
+func TestRepositoryContextDiscoverySelectsConventionalSourcesWithinBudgets(t *testing.T) {
+	discovery := &localworker.ContextDiscovery{
+		SourceRoots: []string{"src/main/java"}, UnitTestRoots: []string{"src/test/java"},
+		SourceExtensions: []string{".java"}, UnitTestSuffix: "Test.java", BuildFiles: []string{"pom.xml"}, MaxFiles: 8,
+	}
+	archive := gzipBytes(t, tarBytes(t, map[string][]byte{
+		"pom.xml":                                        []byte("<project/>\n"),
+		"README.md":                                      []byte("not model context\n"),
+		"src/main/java/example/Service.java":             []byte("class Service {}\n"),
+		"src/main/java/example/Model.java":               []byte("class Model {}\n"),
+		"src/main/resources/application.properties":      []byte("secret=not-context\n"),
+		"src/test/java/example/ServiceTest.java":         []byte("class ServiceTest {}\n"),
+		"src/test/java/example/ServiceIT.java":           []byte("class ServiceIT {}\n"),
+		"src/test/java/example/fixtures/sample-data.txt": []byte("fixture data\n"),
+	}))
+	files, err := discoveredContextFiles(archive, discovery, 1024)
+	want := []string{"pom.xml", "src/main/java/example/Model.java", "src/main/java/example/Service.java", "src/test/java/example/ServiceTest.java"}
+	if err != nil || len(files) != len(want) {
+		t.Fatalf("discovered context: files=%v err=%v", files, err)
+	}
+	for i, name := range want {
+		if files[i].Path != name || files[i].Digest != digestBytes([]byte(files[i].Content)) {
+			t.Fatalf("discovered context[%d]=%+v, want %s with bound digest", i, files[i], name)
+		}
+	}
+	discovery.MaxFiles = 3
+	if _, err := discoveredContextFiles(archive, discovery, 1024); err == nil {
+		t.Fatal("discovery exceeded the profile file-count bound")
+	}
+	discovery.MaxFiles = 8
+	if _, err := discoveredContextFiles(archive, discovery, 16); err == nil {
+		t.Fatal("discovery exceeded the model context-byte bound")
+	}
+	missingBuild := gzipBytes(t, tarBytes(t, map[string][]byte{"src/main/java/example/Service.java": []byte("class Service {}\n")}))
+	if _, err := discoveredContextFiles(missingBuild, discovery, 1024); err == nil {
+		t.Fatal("discovery accepted a source tree without required build metadata")
+	}
+}
+
 func TestSourceEvidenceRejectsWrongSourceProfileAndMissingArtifacts(t *testing.T) {
 	for _, which := range []string{"commit", "profile", "partial", "failed", "identity", "archive", "repository"} {
 		t.Run(which, func(t *testing.T) {
@@ -174,6 +213,32 @@ func TestPolicyStrictDecodeAndBounds(t *testing.T) {
 	}
 	if _, err := DecodePolicy(bytes.Replace(p.raw, []byte(`"pydantic_ai"`), []byte(`"aider"`), 1)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRepositoryDiscoveryPolicyRejectsCuratedSourceFileLists(t *testing.T) {
+	p, err := DecodePolicy([]byte(fixturePolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dynamic map[string]any
+	if err := json.Unmarshal(p.raw, &dynamic); err != nil {
+		t.Fatal(err)
+	}
+	dynamic["schema_version"] = "2"
+	delete(dynamic, "context_paths")
+	raw, err := json.Marshal(dynamic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := DecodePolicy(raw)
+	if err != nil || len(loaded.ContextPaths) != 0 {
+		t.Fatalf("repository-discovery policy rejected or retained file paths: %+v %v", loaded, err)
+	}
+	dynamic["context_paths"] = []string{"src/main/java/example/Service.java"}
+	raw, _ = json.Marshal(dynamic)
+	if _, err := DecodePolicy(raw); err == nil {
+		t.Fatal("repository-discovery policy accepted a curated source-file list")
 	}
 }
 

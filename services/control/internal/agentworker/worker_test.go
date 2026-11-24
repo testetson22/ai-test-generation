@@ -45,7 +45,7 @@ const fixturePolicy = `{
   "network_policy": "public-egress-development"
 }`
 
-const fixtureProbe = `{"schema_version":"1","worker_version":"0.1.0","python_version":"3.12.9","model_calls_allowed":false,"live_integration":"not_verified","harnesses":{"pydantic_ai":{"installed":true,"version":"2.68.0","expected_version":"2.68.0","live_supported":true},"aider":{"installed":false,"version":null,"expected_version":"0.86.2","live_supported":false,"limitation":"hard_request_token_and_shell_safety_limits_unverified"}}}`
+const fixtureProbe = `{"schema_version":"1","worker_version":"0.6.0","python_version":"3.12.9","model_calls_allowed":false,"live_integration":"not_verified","harnesses":{"pydantic_ai":{"installed":true,"version":"2.68.0","expected_version":"2.68.0","live_supported":true},"aider":{"installed":false,"version":null,"expected_version":"0.86.2","live_supported":false,"limitation":"hard_request_token_and_shell_safety_limits_unverified"}}}`
 
 func repositoryAsset(t *testing.T, parts ...string) string {
 	t.Helper()
@@ -58,17 +58,17 @@ func repositoryAsset(t *testing.T, parts ...string) string {
 
 func syntheticProfile(t *testing.T) (localworker.Profile, []byte) {
 	t.Helper()
-	methods := make([]string, 121)
+	methods := make([]string, 125)
 	for i := range methods {
 		methods[i] = fmt.Sprintf("synthetic%03d", i)
 	}
 	// The decoder requires these profile identities and resource settings; the
 	// generated inventory below deliberately makes no claims about that target.
 	raw, err := json.Marshal(localworker.Profile{
-		SchemaVersion: "1", ID: "ssc-java17-maven", Version: "1.0.0",
+		SchemaVersion: "1", ID: "ssc-java17-maven", Version: "1.0.2",
 		RepositoryURL: localworker.SourceURL, Commit: localworker.SourceCommit,
 		Subdirectory: ".", NetworkPolicy: "public-egress-development",
-		BaseImage: localworker.BaseImage, WorkerRecipe: "java17-maven-v1",
+		BaseImage: localworker.BaseImage, WorkerRecipe: "java17-maven-v3",
 		Sandbox:         localworker.Sandbox{MemoryMiB: 3072, WorkspaceMiB: 1536, TemporaryMiB: 64, PIDs: 256, CPUs: 2, FileMiB: 512},
 		MavenGoals:      map[string][]string{"package": {"clean", "package"}, "focused_tests": {"clean", "test"}, "verify": {"clean", "verify"}},
 		DeadlineSeconds: 120, RetentionSeconds: 120,
@@ -177,7 +177,7 @@ func (f *fakeEngine) command(_ context.Context, input []byte, _ int64, args ...s
 		if harness == "" {
 			harness = "pydantic_ai"
 		}
-		return []byte(`[{"Id":"` + f.image + `","Config":{"Labels":{"io.lightpath.atg.worker":"generation-v1","io.lightpath.atg.harness":"` + harness + `"}}}]`), nil
+		return []byte(`[{"Id":"` + f.image + `","Config":{"Labels":{"io.lightpath.atg.worker":"generation-v6","io.lightpath.atg.harness":"` + harness + `"}}}]`), nil
 	case "run":
 		if f.probeOverride != nil {
 			return bytes.Clone(f.probeOverride), nil
@@ -335,7 +335,7 @@ func fixtureResult(task Task, raw []byte) Result {
 		output = Code{Summary: "Proposed test", Files: []localworker.TestFile{{Path: generatedPath, Content: "package example;\nclass GeneratedTest { void reviewed() {} }\n"}}, SuggestedTestIDs: []string{"example.GeneratedTest#modelSuggested"}, Limitations: []string{}}
 	}
 	outputRaw, _ := json.Marshal(output)
-	return Result{SchemaVersion: "1", JobID: task.JobID, RunID: task.RunID, Attempt: task.Attempt, Phase: task.Phase, RequestDigest: artifact.Digest(raw), SourceCommit: task.Source.Commit, ProfileDigest: task.ProfileDigest, PolicyDigest: task.PolicyDigest, Harness: task.Harness, Model: task.Model, Status: "completed", Output: outputRaw, Usage: &Usage{}, Versions: map[string]string{"worker": "0.1.0", "python": "3.12.9", "live_integration": "not_verified"}}
+	return Result{SchemaVersion: "1", JobID: task.JobID, RunID: task.RunID, Attempt: task.Attempt, Phase: task.Phase, RequestDigest: artifact.Digest(raw), SourceCommit: task.Source.Commit, ProfileDigest: task.ProfileDigest, PolicyDigest: task.PolicyDigest, Harness: task.Harness, Model: task.Model, Status: "completed", Output: outputRaw, Usage: &Usage{}, Versions: map[string]string{"worker": "0.6.0", "python": "3.12.9", "live_integration": "not_verified"}}
 }
 
 func tarBytes(t *testing.T, files map[string][]byte) []byte {
@@ -452,6 +452,16 @@ func TestFixtureStagesLostAcknowledgementsReviewAndCleanup(t *testing.T) {
 	if err != nil || again != analyzed {
 		t.Fatalf("reconcile: %+v %v", again, err)
 	}
+	beforeRecovery := len(f.calls)
+	recovered, err := w.RunStage(context.Background(), StageRequest{Work: r, Phase: "analyze", RecoveryOnly: true})
+	if err != nil || recovered != analyzed {
+		t.Fatalf("completed-only recovery: %+v %v", recovered, err)
+	}
+	for _, args := range f.calls[beforeRecovery:] {
+		if slices.Contains([]string{"create", "start", "exec"}, args[0]) {
+			t.Fatalf("completed-only recovery dispatched or modified a worker: %v", args)
+		}
+	}
 	r.ReconcileOnly = false
 	r.IdempotencyKey = "phase-plan-1"
 	planned, err := w.RunStage(context.Background(), StageRequest{Work: r, Phase: "plan", AnalysisRef: analyzed.ArtifactRef})
@@ -551,6 +561,24 @@ func TestResultIndependentValidationAndRedaction(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestPriorOutputBindingUsesJSONSemantics(t *testing.T) {
+	for _, test := range []struct {
+		phase string
+		left  string
+		right string
+	}{
+		{"analyze", `{"summary":"source < fact","facts":[],"gaps":[],"limitations":[]}`, `{"summary":"source \u003c fact","facts":[],"gaps":[],"limitations":[]}`},
+		{"plan", `{"summary":"bounded > case","scenarios":[{"name":"case","source_paths":["pom.xml"],"test_path":"src/test/java/ExampleTest.java","behavior":"reject < malformed input","oracle":"bounded failure"}],"limitations":[]}`, `{"summary":"bounded \u003e case","scenarios":[{"name":"case","source_paths":["pom.xml"],"test_path":"src/test/java/ExampleTest.java","behavior":"reject \u003c malformed input","oracle":"bounded failure"}],"limitations":[]}`},
+	} {
+		if !samePriorOutput(test.phase, []byte(test.left), []byte(test.right)) {
+			t.Errorf("%s prior output should compare equal despite equivalent JSON escaping", test.phase)
+		}
+	}
+	if samePriorOutput("analyze", []byte(`{"summary":"a","facts":[],"gaps":[],"limitations":[]}`), []byte(`{"summary":"b","facts":[],"gaps":[],"limitations":[]}`)) {
+		t.Fatal("different prior output was accepted")
 	}
 }
 
@@ -677,6 +705,18 @@ func TestRetentionFailureNeverSealsOrCleans(t *testing.T) {
 	}
 	if err = w.CleanupRun(context.Background(), r.RunID); err == nil {
 		t.Fatal("active worker cleanup accepted")
+	}
+}
+
+func TestTaskCarriesOptionalOpaqueContextInput(t *testing.T) {
+	w, _, r, _ := fixture(t)
+	r.Request.Generation.ContextInput = json.RawMessage(`{"provenance":"user","references":[{"path":"src/example/Service.java"}]}`)
+	task, _, err := w.task(context.Background(), StageRequest{Work: r, Phase: "analyze"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(task.ContextInput) != string(r.Request.Generation.ContextInput) {
+		t.Fatalf("worker dropped opaque context input: %s", task.ContextInput)
 	}
 }
 

@@ -50,6 +50,7 @@ type StageRequest struct {
 	AnalysisRef          string
 	PlanRef              string
 	PreviousCandidateRef string
+	RecoveryOnly         bool `json:"-"`
 }
 type StageResult struct {
 	ArtifactRef string `json:"artifact_ref"`
@@ -125,20 +126,20 @@ func (w *Worker) get(ctx context.Context, ref string, limit int64) ([]byte, erro
 
 func (w *Worker) task(ctx context.Context, r StageRequest) (Task, []byte, error) {
 	x := r.Work
-	if w.PolicyDigest() == "" || x.RunID == "" || len(x.RunID) > 256 || x.IdempotencyKey == "" || len(x.IdempotencyKey) > 1024 || x.Attempt < 1 || x.Attempt > 100 || !commitPattern.MatchString(x.ResolvedCommit) || !slices.Contains([]string{"analyze", "plan", "code"}, r.Phase) || x.Request.InputMode != testgenflow.InputModeModelGeneration || x.Request.CompletionMode != testgenflow.CompletionModePatchOnly || x.Request.Generation == nil || x.Request.Generation.PolicyDigest != w.PolicyDigest() || !slices.Equal(x.Request.Generation.ContextPaths, w.policy.ContextPaths) || !text(x.Request.Generation.Objective) || len(x.RepairFeedback) > 16384 {
+	if w.PolicyDigest() == "" || x.RunID == "" || len(x.RunID) > 256 || x.IdempotencyKey == "" || len(x.IdempotencyKey) > 1024 || x.Attempt < 1 || x.Attempt > 100 || !commitPattern.MatchString(x.ResolvedCommit) || !slices.Contains([]string{"analyze", "plan", "code"}, r.Phase) || x.Request.InputMode != testgenflow.InputModeModelGeneration || x.Request.CompletionMode != testgenflow.CompletionModePatchOnly || x.Request.Generation == nil || x.Request.Generation.PolicyDigest != w.PolicyDigest() || !w.validGenerationContext(x.Request.Generation) || !text(x.Request.Generation.Objective) || len(x.RepairFeedback) > 16384 {
 		return Task{}, nil, fmt.Errorf("generation request differs from ready policy or pinned source")
 	}
 	src, err := w.source(ctx, x)
 	if err != nil {
 		return Task{}, nil, err
 	}
-	t := Task{SchemaVersion: "1", JobID: containerName(x.IdempotencyKey), RunID: x.RunID, Attempt: x.Attempt, Phase: r.Phase, Objective: x.Request.Generation.Objective, ProfileDigest: x.Request.ProfileDigest, PolicyDigest: w.PolicyDigest(), Harness: w.policy.Harness, Model: w.policy.Model, Source: src, Limits: w.policy.Limits, Prior: Prior{RepairFeedback: x.RepairFeedback, PreviousCandidateRef: r.PreviousCandidateRef}}
+	t := Task{SchemaVersion: "1", JobID: containerName(x.IdempotencyKey), RunID: x.RunID, Attempt: x.Attempt, Phase: r.Phase, Objective: x.Request.Generation.Objective, ContextInput: bytes.Clone(x.Request.Generation.ContextInput), ProfileDigest: x.Request.ProfileDigest, PolicyDigest: w.PolicyDigest(), Harness: w.policy.Harness, Model: w.policy.Model, Source: src, Limits: w.policy.Limits, Prior: Prior{RepairFeedback: x.RepairFeedback, PreviousCandidateRef: r.PreviousCandidateRef}}
 	for _, p := range []struct{ ref, phase string }{{r.AnalysisRef, "analyze"}, {r.PlanRef, "plan"}, {r.PreviousCandidateRef, "code"}} {
 		if p.ref == "" {
 			continue
 		}
 		e, prior, output, err := w.loadEvidence(ctx, p.ref)
-		if err != nil || e.Partial || output.Status != "completed" || prior.RunID != t.RunID || prior.Phase != p.phase || prior.ProfileDigest != t.ProfileDigest || prior.PolicyDigest != t.PolicyDigest || prior.Source.Commit != t.Source.Commit || prior.Source.TreeID != t.Source.TreeID || prior.Source.ArtifactRef != t.Source.ArtifactRef || prior.Objective != t.Objective || (p.phase != "code" && prior.Attempt != t.Attempt) || (p.phase == "code" && prior.Attempt >= t.Attempt) {
+		if err != nil || e.Partial || output.Status != "completed" || prior.RunID != t.RunID || prior.Phase != p.phase || prior.ProfileDigest != t.ProfileDigest || prior.PolicyDigest != t.PolicyDigest || prior.Source.Commit != t.Source.Commit || prior.Source.TreeID != t.Source.TreeID || prior.Source.ArtifactRef != t.Source.ArtifactRef || prior.Objective != t.Objective || !bytes.Equal(prior.ContextInput, t.ContextInput) || (p.phase != "code" && prior.Attempt != t.Attempt) || (p.phase == "code" && prior.Attempt >= t.Attempt) {
 			return Task{}, nil, fmt.Errorf("prior generation artifact identity mismatch")
 		}
 		if p.phase == "analyze" {
@@ -159,6 +160,20 @@ func (w *Worker) task(ctx context.Context, r StageRequest) (Task, []byte, error)
 		return Task{}, nil, artifact.ErrTooLarge
 	}
 	return t, raw, nil
+}
+
+func (w *Worker) validGenerationContext(request *testgenflow.GenerationRequest) bool {
+	if request == nil {
+		return false
+	}
+	switch request.ContextMode {
+	case testgenflow.ContextModeProfileDiscovery:
+		return w.policy.SchemaVersion == "2" && len(w.policy.ContextPaths) == 0 && len(request.ContextPaths) == 0
+	case "":
+		return w.policy.SchemaVersion == "1" && slices.Equal(request.ContextPaths, w.policy.ContextPaths)
+	default:
+		return false
+	}
 }
 
 func (w *Worker) credential() ([]byte, error) {
@@ -260,6 +275,12 @@ func (w *Worker) RunStage(ctx context.Context, r StageRequest) (StageResult, err
 	}
 	if exists && !w.owns(state, t.RunID, input, t.Phase) {
 		return StageResult{}, unknown("named generation worker identity conflict")
+	}
+	if r.RecoveryOnly {
+		if !r.Work.ReconcileOnly || !exists || state.State.Running || neverStarted(state) {
+			return StageResult{}, unknown("completed generation worker is not available for recovery")
+		}
+		return w.receiptResult(ctx, state, input)
 	}
 	if exists && !state.State.Running && !neverStarted(state) {
 		return w.receiptResult(ctx, state, input)
